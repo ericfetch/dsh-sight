@@ -25,22 +25,42 @@ pnpm typecheck    # tsc --noEmit
 
 ## 安装（DSH 用户侧）
 
+两种方式任选其一（GitHub 安装当前可用；npm 安装需先发布，见下方「发布」）。
+
+### 方式一：GitHub 安装（当前可用）
+
 ```sh
-# npm 安装（推荐：npm 分发的是预构建 lib/，无需任何授权）
-dsh plugin --profile web add dsh-sight
+# pnpm 的 github: 简写（等价于完整 git 地址 git+https://github.com/ericfetch/dsh-sight.git#<sha>）
+dsh plugin --profile web add github:ericfetch/dsh-sight#33bdecfb929513684712d910c2482c96c808eb6d
+```
 
-# 或 GitHub 安装（git 拉的是源码，pnpm 会运行 prepare 构建 —— 需要授权）：
-dsh plugin --profile web add github:<your-name>/dsh-sight#<commit-sha>
-# 首次 add 会失败并提示，把 pnpm 打印的确切包键复制进该 profile 的 pnpm-workspace.yaml：
-#   allowBuilds:
-#     dsh-sight: true
-# 然后重新执行 add。
-# 如实看待这项授权：它允许包代码在安装时于你的机器上执行，且不在 agent 的沙箱之内。
-# 只对源码可信的包授权，并锁定 commit（#<sha>），让后续推送无法悄悄改变实际运行的内容。
+git 安装拉的是**源码**，pnpm 会运行 `prepare`（tsdown）构建 —— 需要授权：
 
-# 验证补丁层
-dsh --profile web --dump-config
+1. 首次 `add` 会失败，pnpm 会打印一个**精确**的 allowBuilds 键（形如
+   `dsh-sight@https://codeload.github.com/ericfetch/dsh-sight/tar.gz/<sha>: true`）；
+2. 把**该精确键**复制进该 profile 的 `pnpm-workspace.yaml`：
 
+   ```yaml
+   allowBuilds:
+     dsh-sight@https://codeload.github.com/ericfetch/dsh-sight/tar.gz/33bdecfb929513684712d910c2482c96c808eb6d: true
+   ```
+
+3. 重新执行 `add`。
+
+如实看待这项授权：它允许包代码在安装时于你的机器上执行，且不在 agent 的沙箱之内。
+只对源码可信的包授权，并锁定 commit（`#<sha>`），让后续推送无法悄悄改变实际运行的内容。
+
+### 方式二：npm 安装（发布后可用）
+
+```sh
+# 发布到 npm 后（见「发布」），直接按包名安装 —— npm 分发预构建 lib/，无需任何授权
+dsh plugin --profile web add <npm包名>
+```
+
+### 验证与重启（两种方式相同）
+
+```sh
+dsh --profile web --dump-config   # 应出现 "# == dsh-sight" 补丁层
 # 重启 DSH Desktop —— 启动时按 bundles 组合：host 行激活、client bundle 进 __DSH_BOOT__
 ```
 
@@ -48,8 +68,15 @@ dsh --profile web --dump-config
 
 ## 发布
 
+> ⚠️ **npm 包名 `dsh-sight` 已被他人占用**（`fu3rte` 的另一个插件）。要发布到 npm，必须先：
+> 1. 改包名（`package.json` 的 `name`），例如 `@ericfetch/dsh-sight` 或 `dsh-sight-direct` 等未被占用的名字；
+> 2. 本机 `npm login`（需要你的 npm 账号）；
+> 3. `npm publish`（`lib/` 已预构建，`prepare` 已配置，git 安装时自动构建）。
+>
+> GitHub 仓库名 `ericfetch/dsh-sight` 不受影响（GitHub 包名可跨用户重复）。
+
 ```sh
-npm publish       # 发布前先 pnpm build（prepare 已配置，git 安装时自动构建）
+npm publish       # 发布前先 pnpm build
 ```
 
 ## 说明
