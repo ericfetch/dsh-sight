@@ -1,0 +1,5 @@
+# dsh-sight bundle layer: insert the Sight plugin row. The patch references the
+# package by name so Node module resolution finds the installed bundle code.
+- insert:
+    - id: sight
+      name: dsh-sight
