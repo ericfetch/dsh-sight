@@ -37,12 +37,12 @@ dsh plugin --profile web add github:ericfetch/dsh-sight#33bdecfb929513684712d910
 git 安装拉的是**源码**，pnpm 会运行 `prepare`（tsdown）构建 —— 需要授权：
 
 1. 首次 `add` 会失败，pnpm 会打印一个**精确**的 allowBuilds 键（形如
-   `dsh-sight@https://codeload.github.com/ericfetch/dsh-sight/tar.gz/<sha>: true`）；
+   `@ericfetch/dsh-sight@https://codeload.github.com/ericfetch/dsh-sight/tar.gz/<sha>: true`）；
 2. 把**该精确键**复制进该 profile 的 `pnpm-workspace.yaml`：
 
    ```yaml
    allowBuilds:
-     dsh-sight@https://codeload.github.com/ericfetch/dsh-sight/tar.gz/33bdecfb929513684712d910c2482c96c808eb6d: true
+     '@ericfetch/dsh-sight@https://codeload.github.com/ericfetch/dsh-sight/tar.gz/<sha>': true
    ```
 
 3. 重新执行 `add`。
@@ -54,17 +54,17 @@ git 安装拉的是**源码**，pnpm 会运行 `prepare`（tsdown）构建 —�
 
 ```sh
 # 发布到 npm 后（见「发布」），直接按包名安装 —— npm 分发预构建 lib/，无需任何授权
-dsh plugin --profile web add <npm包名>
+dsh plugin --profile web add @ericfetch/dsh-sight
 ```
 
 ### 验证与重启（两种方式相同）
 
 ```sh
-dsh --profile web --dump-config   # 应出现 "# == dsh-sight" 补丁层
+dsh --profile web --dump-config   # 应出现 "# == @ericfetch/dsh-sight" 补丁层
 # 重启 DSH Desktop —— 启动时按 bundles 组合：host 行激活、client bundle 进 __DSH_BOOT__
 ```
 
-卸载：`dsh plugin --profile web remove dsh-sight`
+卸载：`dsh plugin --profile web remove @ericfetch/dsh-sight`
 
 ## 发布
 

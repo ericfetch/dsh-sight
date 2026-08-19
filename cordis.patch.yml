@@ -2,4 +2,4 @@
 # package by name so Node module resolution finds the installed bundle code.
 - insert:
     - id: sight
-      name: dsh-sight
+      name: '@ericfetch/dsh-sight'
