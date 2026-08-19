@@ -33,7 +33,7 @@ npm 分发预构建产物，无需任何授权。
 dsh plugin --profile web add github:ericfetch/dsh-sight#<commit-sha>
 ```
 
-git 安装会运行构建脚本，首次 `add` 会提示授权：把 pnpm 打印的**精确键**加入该 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds` 后重新执行。
+一条命令即可：仓库已提交预构建 `lib/` 且无 `prepare` 构建脚本，安装时无需任何构建授权。
 
 ### 验证
 
