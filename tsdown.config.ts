@@ -6,7 +6,7 @@
  */
 import { defineConfig, type UserConfig } from 'tsdown'
 
-const PACKAGE_ID = '@ericfetch/dsh-sight'
+const PACKAGE_ID = '@eric.wen/dsh-sight'
 
 /**
  * Specifiers resolved from the Web shell module table. Everything else is
