@@ -1,6 +1,6 @@
 {
   "name": "@eric.wen/dsh-sight",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DeepSeek Harness plugin: direct multimodal image transfer declarations + per-session image clearing (surface replace), with a settings page and composer controls.",
   "license": "MIT",
   "type": "module",
