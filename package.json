@@ -59,7 +59,6 @@
   },
   "scripts": {
     "build": "tsdown",
-    "prepare": "tsdown",
     "typecheck": "tsc -p tsconfig.json --pretty false"
   },
   "dependencies": {
