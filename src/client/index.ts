@@ -15,8 +15,11 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   SIGHT_RPC,
   SIGHT_RPC_CHANNEL,
+  type SightApplyReasoningResult,
   type SightClearImagesResult,
   type SightModelEntry,
+  type SightReasoningChange,
+  type SightReasoningDictionaryEntry,
   type SightSessionImagesResult,
   type SightSetVisionResult,
   type SightStatusResult,
@@ -68,6 +71,9 @@ function ModelRow(props: { model: SightModelEntry; provider: string; busy: strin
   const dictChip = model.matched !== null
     ? React.createElement(Chip, { tone: 'info' }, `字典匹配: ${model.matched}`)
     : React.createElement(Chip, { tone: 'warn' }, '未匹配')
+  const reasoningChip = model.reasoning === null || !model.reasoning.declared
+    ? React.createElement(Chip, { tone: 'warn' }, '无推理等级')
+    : React.createElement(Chip, { tone: 'info' }, `推理: ${model.reasoning.levels.join('/')}`)
   const working = busy === `${provider}/${model.id}`
   return React.createElement(
     'div',
@@ -78,6 +84,7 @@ function ModelRow(props: { model: SightModelEntry; provider: string; busy: strin
     ),
     statusChip,
     dictChip,
+    reasoningChip,
     React.createElement(
       'button',
       { type: 'button', style: BUTTON, disabled: busy !== '' || working, onClick: () => onToggle(provider, model.id, !model.vision) },
@@ -90,6 +97,7 @@ function SightPage(): ReactElement {
   const [data, setData] = React.useState<SightStatusResult | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState('')
+  const [reasoningResult, setReasoningResult] = React.useState<SightApplyReasoningResult | null>(null)
 
   const load = React.useCallback(() => {
     rpc<SightStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.status, {})
@@ -117,19 +125,47 @@ function SightPage(): ReactElement {
       .finally(() => setBusy(''))
   }
 
+  const applyReasoning = (): void => {
+    if (busy !== '') return
+    setBusy('reasoning')
+    rpc<SightApplyReasoningResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.applyReasoning, {})
+      .then(value => { setReasoningResult(value); load() })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(''))
+  }
+
   const children: ReactNode[] = []
   children.push(React.createElement('h2', { style: { margin: 0, fontSize: 16, fontWeight: 600 } }, '多模态图片直传 (Sight)'))
   children.push(React.createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.75, lineHeight: 1.6 } },
     '在输入框粘贴或拖入的图片会以原生图片内容直接发送给多模态模型（不经文本转换）。' +
-    '下方可逐个模型声明「支持图片」，或一键应用字典匹配。声明写入 llm-pi-ai 配置，下次请求即生效。'))
-  children.push(React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+    '下方可逐个模型声明「支持图片」，或一键应用字典匹配。' +
+    '新增第三方渠道后，「自动补推理等级」会按模型家族写入其支持的推理档位（reasoningEfforts）。' +
+    '声明写入 llm-pi-ai 配置，下次请求即生效。'))
+  children.push(React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
     React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: applyDictionary },
       busy === 'apply' ? '应用中…' : '一键应用字典匹配'),
+    React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: applyReasoning },
+      busy === 'reasoning' ? '补档中…' : '自动补推理等级'),
     React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: load }, '刷新'),
   ))
 
   if (error !== null) {
     children.push(React.createElement('div', { style: { color: '#ef4444', fontSize: 12, whiteSpace: 'pre-wrap' } }, error))
+  }
+
+  if (reasoningResult !== null) {
+    const lines: ReactNode[] = []
+    lines.push(React.createElement('div', { style: { fontSize: 12, fontWeight: 600 } },
+      `自动补推理等级完成：${reasoningResult.applied} 个模型，${reasoningResult.providers} 个渠道。`))
+    if (Array.isArray(reasoningResult.changes) && reasoningResult.changes.length > 0) {
+      lines.push(React.createElement('div', { style: { fontSize: 12, opacity: 0.75, marginTop: 4 } },
+        ...reasoningResult.changes.flatMap((change: SightReasoningChange, index: number) => [
+          React.createElement('div', { key: `c${index}` },
+            `· ${change.provider}/${change.model} → ${change.family} [${change.efforts.map(e => e.wire || e.level).join(', ')}]`),
+        ]),
+      ))
+    }
+    children.push(React.createElement('div', { style: { border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)' } }, ...lines))
   }
 
   if (data === null) {
@@ -160,6 +196,14 @@ function SightPage(): ReactElement {
       children.push(React.createElement('div', { style: { fontSize: 12, opacity: 0.65 } }, '内置多模态模型字典（正则匹配模型 id）：'))
       children.push(React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
         ...data.dictionary.map(entry => React.createElement(Chip, { key: `${entry.family}${entry.label}`, tone: 'info' }, `${entry.family} (${entry.label})`)),
+      ))
+    }
+    if (Array.isArray(data.reasoningDictionary) && data.reasoningDictionary.length > 0) {
+      children.push(React.createElement('div', { style: { fontSize: 12, opacity: 0.65, marginTop: 8 } }, '推理等级字典（正则匹配模型 id → 支持的档位）：'))
+      children.push(React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
+        ...data.reasoningDictionary.map((entry: SightReasoningDictionaryEntry) =>
+          React.createElement(Chip, { key: `${entry.family}${entry.label}`, tone: 'info' },
+            `${entry.family} [${entry.efforts.map(e => e.wire || e.level).join(', ')}]`)),
       ))
     }
   }

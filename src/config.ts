@@ -12,6 +12,7 @@ export const SIGHT_RPC = {
   status: 'status',
   setVision: 'setVision',
   applyDictionary: 'applyDictionary',
+  applyReasoning: 'applyReasoning',
   visionStatus: 'visionStatus',
   sessionImages: 'sessionImages',
   clearImages: 'clearImages',
@@ -23,6 +24,13 @@ export interface SightDictionaryEntry {
   readonly label: string
 }
 
+/** One reasoning-effort dictionary entry rendered as a chip on the settings page. */
+export interface SightReasoningDictionaryEntry {
+  readonly family: string
+  readonly label: string
+  readonly efforts: readonly { readonly level: string; readonly wire: string }[]
+}
+
 /** One provider/model row on the settings page. */
 export interface SightModelEntry {
   readonly id: string
@@ -31,6 +39,8 @@ export interface SightModelEntry {
   readonly declared: boolean
   readonly matched: string | null
   readonly source: string
+  /** Whether this model declares a reasoning-effort map and the declared level keys. */
+  readonly reasoning: { readonly declared: boolean; readonly levels: readonly string[] } | null
 }
 
 /** One configured pi-ai provider group on the settings page. */
@@ -45,6 +55,7 @@ export interface SightProviderEntry {
 export interface SightStatusResult {
   readonly namespace: string
   readonly dictionary: readonly SightDictionaryEntry[]
+  readonly reasoningDictionary: readonly SightReasoningDictionaryEntry[]
   readonly providers: readonly SightProviderEntry[]
 }
 
@@ -57,6 +68,21 @@ export interface SightSetVisionResult {
 export interface SightApplyDictionaryResult {
   readonly applied: number
   readonly providers: number
+}
+
+/** One model whose reasoning-effort map was written by {@link SIGHT_RPC.applyReasoning}. */
+export interface SightReasoningChange {
+  readonly provider: string
+  readonly model: string
+  readonly family: string
+  readonly efforts: readonly { readonly level: string; readonly wire: string }[]
+}
+
+/** Result of {@link SIGHT_RPC.applyReasoning}. */
+export interface SightApplyReasoningResult {
+  readonly applied: number
+  readonly providers: number
+  readonly changes: readonly SightReasoningChange[]
 }
 
 /** Result of {@link SIGHT_RPC.visionStatus} (composer badge). */
