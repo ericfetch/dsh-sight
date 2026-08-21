@@ -39,8 +39,14 @@ export interface SightModelEntry {
   readonly declared: boolean
   readonly matched: string | null
   readonly source: string
-  /** Whether this model declares a reasoning-effort map and the declared level keys. */
-  readonly reasoning: { readonly declared: boolean; readonly levels: readonly string[] } | null
+  /**
+   * Reasoning-effort levels this model actually exposes, and where they came
+   * from: `adapter` = resolved from the installed adapter/catalog (e.g. the
+   * official DeepSeek channel always carries off/high/max); `declared` = from a
+   * `reasoningEfforts` map written in the pi-ai settings. `null` when the model
+   * exposes no reasoning levels at all.
+   */
+  readonly reasoning: { readonly source: 'adapter' | 'declared'; readonly levels: readonly string[] } | null
 }
 
 /** One configured pi-ai provider group on the settings page. */

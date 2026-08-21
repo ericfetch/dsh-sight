@@ -155,7 +155,10 @@ interface SettingsServiceLike {
 }
 interface LlmServiceLike {
   listModels(provider: string): Promise<readonly { id: string; name: string }[]>
-  resolveModelInfo(provider: string, model: string): Promise<{ inputModalities?: readonly string[]; reasoning?: unknown }>
+  resolveModelInfo(provider: string, model: string): Promise<{
+    inputModalities?: readonly string[]
+    reasoning?: { efforts?: readonly { id?: string; name?: string }[] }
+  }>
 }
 interface AgentsServiceLike {
   get(id: SessionId): Agent | undefined
@@ -263,22 +266,34 @@ export function apply(ctx: Context): void {
             const listed = await llm.listModels(provider)
             models.push(...await Promise.all(listed.map(async (m): Promise<SightModelEntry> => {
               let vision = false
+              let adapterReasoning: readonly { id?: string; name?: string }[] | undefined
               try {
                 const info = await llm.resolveModelInfo(provider, m.id)
                 vision = Array.isArray(info.inputModalities) && info.inputModalities.includes('image')
+                adapterReasoning = info.reasoning?.efforts
               } catch {
                 vision = false
               }
               const matched = familyOf(m.id)
               const declared = rawDeclaresImage(rawProviders?.[provider], m.id)
               const reasoning = ((): SightModelEntry['reasoning'] => {
+                // The adapter's own resolution wins: an installed catalog or the
+                // official channel already describes the levels it serves. Only
+                // when the adapter reports none do we fall back to a
+                // `reasoningEfforts` map declared in the pi-ai settings.
+                if (Array.isArray(adapterReasoning)) {
+                  const levels = adapterReasoning
+                    .map(e => (typeof e?.id === 'string' && e.id.length > 0 ? e.id : undefined))
+                    .filter((id): id is string => id !== undefined)
+                  if (levels.length > 0) return { source: 'adapter', levels }
+                }
                 const entry = (rawProviders?.[provider]?.models?.find(x => x !== null && typeof x === 'object' && x.id === m.id))
                   ?? (rawProviders?.[provider]?.modelOverrides?.[m.id])
                 const efforts = entry?.reasoningEfforts
                 if (efforts !== undefined && efforts !== false && efforts !== null) {
-                  return { declared: true, levels: Object.keys(efforts) }
+                  return { source: 'declared', levels: Object.keys(efforts) }
                 }
-                return { declared: false, levels: [] }
+                return null
               })()
               return {
                 id: m.id,

@@ -71,9 +71,11 @@ function ModelRow(props: { model: SightModelEntry; provider: string; busy: strin
   const dictChip = model.matched !== null
     ? React.createElement(Chip, { tone: 'info' }, `字典匹配: ${model.matched}`)
     : React.createElement(Chip, { tone: 'warn' }, '未匹配')
-  const reasoningChip = model.reasoning === null || !model.reasoning.declared
+  const reasoningChip = model.reasoning === null
     ? React.createElement(Chip, { tone: 'warn' }, '无推理等级')
-    : React.createElement(Chip, { tone: 'info' }, `推理: ${model.reasoning.levels.join('/')}`)
+    : model.reasoning.source === 'declared'
+      ? React.createElement(Chip, { tone: 'info' }, `推理(声明): ${model.reasoning.levels.join('/')}`)
+      : React.createElement(Chip, { tone: 'on' }, `推理: ${model.reasoning.levels.join('/')}`)
   const working = busy === `${provider}/${model.id}`
   return React.createElement(
     'div',
