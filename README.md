@@ -41,15 +41,17 @@ DeepSeek Harness（DSH）插件：**多模态图片直传** + **会话图片清�
 ### 方式一：npm（推荐）
 
 ```sh
-dsh plugin --profile web add @eric.wen/dsh-sight
+dsh plugin --profile desktop add @eric.wen/dsh-sight
 ```
+
+> 桌面版 DSH Desktop 用 `desktop` profile；本地 CLI 用 `web`（按你的实际 profile 替换）。
 
 npm 分发预构建产物，无需任何授权。
 
 ### 方式二：GitHub
 
 ```sh
-dsh plugin --profile web add github:ericfetch/dsh-sight#<commit-sha>
+dsh plugin --profile desktop add github:ericfetch/dsh-sight#<commit-sha>
 ```
 
 一条命令即可：仓库已提交预构建 `lib/` 且无 `prepare` 构建脚本，安装时无需任何构建授权。
@@ -57,12 +59,24 @@ dsh plugin --profile web add github:ericfetch/dsh-sight#<commit-sha>
 ### 验证
 
 ```sh
-dsh --profile web --dump-config   # 应出现 "# == @eric.wen/dsh-sight" 补丁层
+dsh --profile desktop --dump-config   # 应出现 "# == @eric.wen/dsh-sight" 补丁层
 ```
 
 然后**重启 DSH Desktop**，插件自动加载。
 
-卸载：`dsh plugin --profile web remove @eric.wen/dsh-sight`
+## 升级
+
+发布新版本后，**不需要卸载重装**——pnpm 按已声明的版本范围自动拉取最新：
+
+```sh
+dsh plugin --profile desktop update @eric.wen/dsh-sight
+```
+
+- 安装时声明的是 `^0.1.x`（允许小版本升级），`update` 会拉到范围内最新版；
+- 想锁死大版本范围或装指定版本：`dsh plugin --profile desktop add @eric.wen/dsh-sight@0.1.4`；
+- 更新后**重启 DSH Desktop** 生效。
+
+卸载：`dsh plugin --profile desktop remove @eric.wen/dsh-sight`
 
 ## 使用
 
