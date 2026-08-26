@@ -17,7 +17,6 @@ import {
   SIGHT_RPC_CHANNEL,
   type SightApplyReasoningResult,
   type SightClearImagesResult,
-  type SightFigmaMcpApplyRequest,
   type SightFigmaMcpStatusResult,
   type SightFigmaMcpWriteResult,
   type SightModelEntry,
@@ -58,16 +57,6 @@ const CHIP_OFF: CSSProperties = { borderRadius: 999, padding: '1px 8px', fontSiz
 const CHIP_WARN: CSSProperties = { borderRadius: 999, padding: '1px 8px', fontSize: 11, background: 'rgba(250,204,21,0.16)', color: '#eab308', whiteSpace: 'nowrap' }
 const CHIP_INFO: CSSProperties = { borderRadius: 999, padding: '1px 8px', fontSize: 11, background: 'rgba(59,130,246,0.16)', color: '#3b82f6', whiteSpace: 'nowrap' }
 const ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', borderTop: '1px solid rgba(128,128,128,0.15)', fontSize: 13 }
-const INPUT_STYLE: CSSProperties = {
-  border: '1px solid rgba(128,128,128,0.35)',
-  background: 'transparent',
-  color: 'inherit',
-  borderRadius: 6,
-  padding: '6px 10px',
-  fontSize: 12,
-  width: '100%',
-  boxSizing: 'border-box',
-}
 const GROUP: CSSProperties = { border: '1px solid rgba(128,128,128,0.25)', borderRadius: 8, overflow: 'hidden' }
 const GROUP_HEAD: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 12, fontWeight: 600, borderBottom: '1px solid rgba(128,128,128,0.25)' }
 
@@ -229,15 +218,13 @@ function SightPage(): ReactElement {
 /** Independent settings page for the Figma MCP bridge (own sidebar entry). */
 function FigmaMcpPage(): ReactElement {
   const [status, setStatus] = React.useState<SightFigmaMcpStatusResult | null>(null)
-  const [token, setToken] = React.useState('')
-  const [proxy, setProxy] = React.useState('')
   const [busy, setBusy] = React.useState('')
   const [message, setMessage] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
 
   const load = React.useCallback(() => {
     rpc<SightFigmaMcpStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpStatus, {})
-      .then(value => { setStatus(value); setProxy(value.proxy ?? '') })
+      .then(value => setStatus(value))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }, [])
 
@@ -245,17 +232,10 @@ function FigmaMcpPage(): ReactElement {
 
   const apply = (): void => {
     if (busy !== '') return
-    if (token.trim().length === 0) { setError('请填写 Figma Personal Access Token'); return }
     setBusy('apply')
     setMessage(null); setError(null)
-    const trimmedToken = token.trim()
-    const trimmedProxy = proxy.trim()
-    const req: SightFigmaMcpApplyRequest = trimmedProxy.length > 0
-      ? { token: trimmedToken, proxy: trimmedProxy }
-      : { token: trimmedToken }
-    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpApply, req)
+    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpApply, {})
       .then(value => {
-        setToken('')
         setMessage(value.ok
           ? `已写入 ${value.patchPath}。请重启 DSH Desktop 使 Figma MCP 工具生效。`
           : `写入失败: ${value.error ?? 'unknown'}`)
@@ -283,9 +263,8 @@ function FigmaMcpPage(): ReactElement {
   const children: ReactNode[] = []
   children.push(React.createElement('h2', { style: { margin: 0, fontSize: 16, fontWeight: 600 } }, 'Figma MCP'))
   children.push(React.createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.75, lineHeight: 1.6 } },
-    '把 Figma 设计稿数据接入模型：填写 Figma Personal Access Token 后写入 profile 的 ' +
-    'cordis.patch.yml，通过 DSH 内置 mcp-client 挂载 Figma MCP 工具（get_figma_data / ' +
-    'download_figma_images）。需要网络代理时填写代理地址。写入后请重启 DSH Desktop 生效。'))
+    '让模型直接在 Figma 里做设计：一键启用后，模型可读取当前画布、创建/修改页面元素。' +
+    '无需 Token、无需代理——通过 Figma 桌面版插件桥接，纯本地通信。写入后请重启 DSH Desktop 生效。'))
   children.push(React.createElement('div', { style: { ...GROUP, marginTop: 4 } },
     React.createElement('div', { style: GROUP_HEAD },
       React.createElement('span', null, '连接'),
@@ -299,26 +278,13 @@ function FigmaMcpPage(): ReactElement {
       status !== null && status.error !== null
         ? React.createElement('div', { style: { color: '#ef4444', fontSize: 12 } }, `读取配置失败: ${status.error}`)
         : null,
-      React.createElement('input', {
-        type: 'password',
-        placeholder: 'Figma Personal Access Token（Settings → Security）',
-        value: token,
-        onChange: (e: { target: { value: string } }) => setToken(e.target.value),
-        style: { ...INPUT_STYLE, colorScheme: 'dark' },
-      }),
-      React.createElement('input', {
-        type: 'text',
-        placeholder: '代理地址（可选，如 http://127.0.0.1:7897）',
-        value: proxy,
-        onChange: (e: { target: { value: string } }) => setProxy(e.target.value),
-        style: INPUT_STYLE,
-      }),
       status !== null && status.configured
         ? React.createElement('div', { style: { fontSize: 12, opacity: 0.75, display: 'flex', flexDirection: 'column', gap: 2 } },
             React.createElement('span', null, `配置文件: ${status.patchPath}`),
-            React.createElement('span', null, `Token: ${status.hasToken ? '已配置' : '缺失'} · 代理: ${status.proxy ?? '无'}`),
           )
         : null,
+      React.createElement('div', { style: { fontSize: 12, opacity: 0.75, lineHeight: 1.6 } },
+        '使用前需要：① 打开 Figma 桌面版；② 运行「Figma UI MCP Bridge」插件；③ 在对话里告诉模型连接 figma-ui-mcp。'),
       message !== null
         ? React.createElement('div', { style: { fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '6px 10px' } }, message)
         : null,
@@ -327,10 +293,10 @@ function FigmaMcpPage(): ReactElement {
         : null,
       React.createElement('div', { style: { display: 'flex', gap: 8 } },
         React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: apply },
-          busy === 'apply' ? '写入中…' : '写入配置'),
+          busy === 'apply' ? '写入中…' : '启用 Figma MCP'),
         status !== null && status.configured
           ? React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: remove },
-              busy === 'remove' ? '移除中…' : '移除配置')
+              busy === 'remove' ? '移除中…' : '停用')
           : null,
       ),
     ),

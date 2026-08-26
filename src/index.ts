@@ -33,7 +33,6 @@ import {
   type SightApplyReasoningResult,
   type SightClearFailure,
   type SightClearImagesResult,
-  type SightFigmaMcpApplyRequest,
   type SightFigmaMcpStatusResult,
   type SightFigmaMcpWriteResult,
   type SightModelEntry,
@@ -54,19 +53,20 @@ const NS = 'llm-pi-ai'
 const FIGMA_MCP_PLUGIN = '@deepseek-ai/dsh-mcp-client'
 
 /**
- * Resolve the Figma MCP server entry script. `figma-developer-mcp` ships as a
+ * Resolve the Figma MCP server entry script. `figma-ui-mcp` ships as a
  * dependency of dsh-sight, so it lands in the profile's node_modules next to
- * the plugin; tsdown keeps it external so the standalone bin file exists for
- * the mcp-client child process to spawn. Falls back to the well-known npx
- * cache location if resolution somehow fails.
+ * the plugin; tsdown keeps it external so the standalone entry file exists for
+ * the mcp-client child process to spawn. It runs entirely over localhost (no
+ * Figma REST API, no token, no proxy) — the Figma Desktop plugin is the
+ * execution bridge.
  */
 const FIGMA_MCP_BIN = ((): string => {
   try {
     const require = createRequire(import.meta.url)
-    const resolved = require.resolve('figma-developer-mcp/package.json')
-    return join(dirname(resolved), 'dist', 'bin.js')
+    const resolved = require.resolve('figma-ui-mcp/package.json')
+    return join(dirname(resolved), 'server', 'index.js')
   } catch {
-    return join(homedir(), 'AppData', 'Local', 'Temp', 'figma-mcp-test', 'node_modules', 'figma-developer-mcp', 'dist', 'bin.js')
+    return join(homedir(), 'AppData', 'Local', 'Temp', 'figma-ui-mcp-test', 'node_modules', 'figma-ui-mcp', 'server', 'index.js')
   }
 })()
 
@@ -604,7 +604,11 @@ export function apply(ctx: Context): void {
       }
     }
 
-    /** Find the `insert` entry that carries the Figma MCP row. */
+    /**
+     * Find the `insert` entry that carries the Figma MCP row. Matches by the
+     * mcp-client plugin name AND the `figma-ui` serverName so unrelated
+     * mcp-client rows (other MCP bridges) are never touched.
+     */
     const findFigmaRow = (patch: unknown[]): { insertEntry: Record<string, unknown>; row: Record<string, unknown>; index: number } | null => {
       for (const entry of patch) {
         if (entry === null || typeof entry !== 'object') continue
@@ -615,7 +619,11 @@ export function apply(ctx: Context): void {
           const row = list[i]
           if (row === null || typeof row !== 'object') continue
           const r = row as Record<string, unknown>
-          if (r.name === FIGMA_MCP_PLUGIN) return { insertEntry: e, row: r, index: i }
+          if (r.name !== FIGMA_MCP_PLUGIN) continue
+          const config = r.config
+          if (config === null || typeof config !== 'object') continue
+          const c = config as Record<string, unknown>
+          if (c.serverName === 'figma-ui') return { insertEntry: e, row: r, index: i }
         }
       }
       return null
@@ -629,65 +637,37 @@ export function apply(ctx: Context): void {
       writeFileSync(file, stringifyYaml(patch), 'utf8')
     }
 
-    /** Status: whether the Figma MCP row exists and what it holds (never the token). */
+    /** Status: whether the Figma MCP (figma-ui) row exists in the patch. */
     const figmaMcpStatus = (): SightFigmaMcpStatusResult => {
       const file = patchPath()
       try {
         const patch = readPatch()
         const found = findFigmaRow(patch)
-        let hasToken = false
-        let proxy: string | null = null
-        let command: string | null = null
-        if (found !== null) {
-          const config = found.row.config
-          if (config !== null && typeof config === 'object') {
-            const c = config as Record<string, unknown>
-            if (c.env !== null && typeof c.env === 'object') {
-              const env = c.env as Record<string, unknown>
-              hasToken = typeof env.FIGMA_API_KEY === 'string' && env.FIGMA_API_KEY.length > 0
-              const p = env.HTTPS_PROXY ?? env.FIGMA_PROXY
-              if (typeof p === 'string' && p.length > 0) proxy = p
-            }
-            if (Array.isArray(c.args)) {
-              const cmd = String(c.args[0] ?? '')
-              if (cmd.length > 0) command = cmd
-            }
-          }
-        }
-        return { configured: found !== null, patchPath: file, profile: activeProfile(), hasToken, proxy, command, error: null }
+        return { configured: found !== null, patchPath: file, profile: activeProfile(), error: null }
       } catch (error) {
         return {
           configured: false,
           patchPath: file,
           profile: activeProfile(),
-          hasToken: false,
-          proxy: null,
-          command: null,
           error: error instanceof Error ? error.message : String(error),
         }
       }
     }
 
-    /** Write (or update) the Figma MCP row. Returns without touching other rows. */
-    const figmaMcpApply = async (req: SightFigmaMcpApplyRequest): Promise<SightFigmaMcpWriteResult> => {
-      const token = typeof req.token === 'string' ? req.token.trim() : ''
-      if (token.length === 0) return { ok: false, patchPath: patchPath(), error: 'Figma token is required' }
-      const proxy = typeof req.proxy === 'string' && req.proxy.trim().length > 0 ? req.proxy.trim() : null
-      const env: Record<string, string> = { FIGMA_API_KEY: token }
-      if (proxy !== null) {
-        env.HTTPS_PROXY = proxy
-        env.HTTP_PROXY = proxy
-        env.FIGMA_PROXY = proxy
-      }
+    /**
+     * Write (or update) the Figma MCP row. The `figma-ui-mcp` server needs no
+     * token or proxy — it talks to the Figma Desktop plugin over localhost, so
+     * the row is a bare stdio entry. Returns without touching other rows.
+     */
+    const figmaMcpApply = async (): Promise<SightFigmaMcpWriteResult> => {
       const row = {
-        id: 'figma-mcp',
+        id: 'figma-ui-mcp',
         name: FIGMA_MCP_PLUGIN,
         config: {
           transport: 'stdio',
-          serverName: 'figma',
+          serverName: 'figma-ui',
           command: 'node',
-          args: [FIGMA_MCP_BIN, '--stdio'],
-          env,
+          args: [FIGMA_MCP_BIN],
         },
       }
       try {
@@ -760,10 +740,8 @@ export function apply(ctx: Context): void {
           }
           case SIGHT_RPC.figmaMcpStatus:
             return ok(figmaMcpStatus())
-          case SIGHT_RPC.figmaMcpApply: {
-            const p = payload as Partial<SightFigmaMcpApplyRequest>
-            return ok(await figmaMcpApply(p as SightFigmaMcpApplyRequest))
-          }
+          case SIGHT_RPC.figmaMcpApply:
+            return ok(await figmaMcpApply())
           case SIGHT_RPC.figmaMcpRemove:
             return ok(figmaMcpRemove())
           default:

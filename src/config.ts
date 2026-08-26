@@ -120,31 +120,23 @@ export interface SightClearImagesResult {
 }
 
 /**
- * Status of the Figma MCP bridge on the settings page. The raw Figma token is
- * never echoed back to the browser — only whether one is already configured.
+ * Status of the Figma MCP bridge on the settings page. The bridge runs the
+ * `figma-ui-mcp` server over localhost — no token, no proxy, no Figma REST API.
  */
 export interface SightFigmaMcpStatusResult {
-  /** Whether the current profile's `cordis.patch.yml` declares a Figma MCP row. */
+  /** Whether the current profile's `cordis.patch.yml` declares the Figma MCP row. */
   readonly configured: boolean
   /** The `cordis.patch.yml` absolute path (for the "restart to apply" hint). */
   readonly patchPath: string
   /** Profile name the patch belongs to (e.g. `desktop`). */
   readonly profile: string
-  /** Whether a Figma token is present in the current configuration. */
-  readonly hasToken: boolean
-  /** Proxy URL in use, or null. */
-  readonly proxy: string | null
-  /** The command line that would run the Figma MCP server (sans token), or null. */
-  readonly command: string | null
   /** Any error reading the patch file (e.g. parse failure). */
   readonly error: string | null
 }
 
-/** Request payload for {@link SIGHT_RPC.figmaMcpApply}. */
+/** Request payload for {@link SIGHT_RPC.figmaMcpApply} (no config needed). */
 export interface SightFigmaMcpApplyRequest {
-  /** Figma Personal Access Token (required). */
-  readonly token: string
-  /** Optional proxy URL (e.g. `http://127.0.0.1:7897`) for restricted networks. */
+  readonly token?: string
   readonly proxy?: string
 }
 
