@@ -28,11 +28,11 @@ const VENDORED_LIBRARY = /^@deepseek-ai\/(cosmokit|schemastery)(\/|$)/
 
 /**
  * Packages that must stay as real installed modules rather than being bundled:
- * `figma-ui-mcp` is spawned as a SEPARATE child process by the mcp-client
- * bridge, so it needs a standalone `server/index.js` on disk (bundling would
- * inline it into lib/index.js and leave nothing for the child to execute).
+ * both Figma MCP servers are spawned as SEPARATE child processes by the
+ * mcp-client bridge, so each needs its standalone entry file on disk (bundling
+ * would inline them into lib/index.js and leave nothing for the child to run).
  */
-const NODE_EXTERNALS: readonly string[] = ['figma-ui-mcp']
+const NODE_EXTERNALS: readonly string[] = ['figma-developer-mcp', 'figma-ui-mcp']
 
 const nodeLibrary: UserConfig = {
   name: PACKAGE_ID,

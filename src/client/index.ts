@@ -17,6 +17,8 @@ import {
   SIGHT_RPC_CHANNEL,
   type SightApplyReasoningResult,
   type SightClearImagesResult,
+  type SightFigmaMcpApplyRequest,
+  type SightFigmaMcpRemoveRequest,
   type SightFigmaMcpStatusResult,
   type SightFigmaMcpWriteResult,
   type SightModelEntry,
@@ -219,7 +221,10 @@ function SightPage(): ReactElement {
 function FigmaMcpPage(): ReactElement {
   const [status, setStatus] = React.useState<SightFigmaMcpStatusResult | null>(null)
   const [busy, setBusy] = React.useState('')
-  const [message, setMessage] = React.useState<string | null>(null)
+  const [readToken, setReadToken] = React.useState('')
+  const [readProxy, setReadProxy] = React.useState('')
+  const [readMessage, setReadMessage] = React.useState<string | null>(null)
+  const [writeMessage, setWriteMessage] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
 
   const load = React.useCallback(() => {
@@ -230,80 +235,147 @@ function FigmaMcpPage(): ReactElement {
 
   React.useEffect(() => { load() }, [load])
 
-  const apply = (): void => {
+  const applyRead = (): void => {
     if (busy !== '') return
-    setBusy('apply')
-    setMessage(null); setError(null)
-    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpApply, {})
+    if (readToken.trim().length === 0) { setError('请填写 Figma Personal Access Token'); return }
+    setBusy('read')
+    setReadMessage(null); setError(null)
+    const trimmedToken = readToken.trim()
+    const trimmedProxy = readProxy.trim()
+    const req: SightFigmaMcpApplyRequest = trimmedProxy.length > 0
+      ? { mode: 'read', token: trimmedToken, proxy: trimmedProxy }
+      : { mode: 'read', token: trimmedToken }
+    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpApply, req)
       .then(value => {
-        setMessage(value.ok
-          ? `已写入 ${value.patchPath}。请重启 DSH Desktop 使 Figma MCP 工具生效。`
-          : `写入失败: ${value.error ?? 'unknown'}`)
+        setReadToken('')
+        setReadMessage(value.ok ? '已启用，请重启 DSH Desktop 生效。' : `写入失败: ${value.error ?? 'unknown'}`)
         load()
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(''))
   }
 
-  const remove = (): void => {
+  const removeRead = (): void => {
     if (busy !== '') return
-    setBusy('remove')
-    setMessage(null); setError(null)
-    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpRemove, {})
-      .then(value => {
-        setMessage(value.ok
-          ? `已从 ${value.patchPath} 移除 Figma MCP 配置。`
-          : `移除失败: ${value.error ?? 'unknown'}`)
-        load()
-      })
+    setBusy('read')
+    setReadMessage(null); setError(null)
+    const req: SightFigmaMcpRemoveRequest = { mode: 'read' }
+    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpRemove, req)
+      .then(value => { setReadMessage(value.ok ? '已停用。' : `移除失败: ${value.error ?? 'unknown'}`); load() })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(''))
+  }
+
+  const applyWrite = (): void => {
+    if (busy !== '') return
+    setBusy('write')
+    setWriteMessage(null); setError(null)
+    const req: SightFigmaMcpApplyRequest = { mode: 'write' }
+    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpApply, req)
+      .then(value => { setWriteMessage(value.ok ? '已启用，请重启 DSH Desktop 生效。' : `写入失败: ${value.error ?? 'unknown'}`); load() })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(''))
+  }
+
+  const removeWrite = (): void => {
+    if (busy !== '') return
+    setBusy('write')
+    setWriteMessage(null); setError(null)
+    const req: SightFigmaMcpRemoveRequest = { mode: 'write' }
+    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpRemove, req)
+      .then(value => { setWriteMessage(value.ok ? '已停用。' : `移除失败: ${value.error ?? 'unknown'}`); load() })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(''))
+  }
+
+  const inputStyle: CSSProperties = {
+    border: '1px solid rgba(128,128,128,0.35)', background: 'transparent', color: 'inherit',
+    borderRadius: 6, padding: '6px 10px', fontSize: 12, width: '100%', boxSizing: 'border-box',
   }
 
   const children: ReactNode[] = []
   children.push(React.createElement('h2', { style: { margin: 0, fontSize: 16, fontWeight: 600 } }, 'Figma MCP'))
   children.push(React.createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.75, lineHeight: 1.6 } },
-    '让模型直接在 Figma 里做设计：一键启用后，模型可读取当前画布、创建/修改页面元素。' +
-    '无需 Token、无需代理——通过 Figma 桌面版插件桥接，纯本地通信。写入后请重启 DSH Desktop 生效。'))
-  children.push(React.createElement('div', { style: { ...GROUP, marginTop: 4 } },
+    '分两步接入 Figma：先用 Token 读取设计稿生成代码；需要 AI 直接在 Figma 里画图时，再启用插件桥接。'))
+
+  if (error !== null) {
+    children.push(React.createElement('div', { style: { color: '#ef4444', fontSize: 12 } }, error))
+  }
+
+  const readCfg = status?.read
+  const writeCfg = status?.write
+
+  // ── 区块 1: 设计稿 → 代码（Token，零插件） ──────────────────────────
+  children.push(React.createElement('div', { style: GROUP },
     React.createElement('div', { style: GROUP_HEAD },
-      React.createElement('span', null, '连接'),
-      status === null
+      React.createElement('span', null, '① 设计稿 → 代码'),
+      React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } }, '只填 Token'),
+      readCfg === undefined
         ? null
-        : status.configured
-          ? React.createElement(Chip, { tone: 'on' }, '已配置')
-          : React.createElement(Chip, { tone: 'off' }, '未配置'),
+        : readCfg.configured
+          ? React.createElement(Chip, { tone: 'on' }, '已启用')
+          : React.createElement(Chip, { tone: 'off' }, '未启用'),
     ),
     React.createElement('div', { style: { padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 } },
-      status !== null && status.error !== null
-        ? React.createElement('div', { style: { color: '#ef4444', fontSize: 12 } }, `读取配置失败: ${status.error}`)
-        : null,
-      status !== null && status.configured
-        ? React.createElement('div', { style: { fontSize: 12, opacity: 0.75, display: 'flex', flexDirection: 'column', gap: 2 } },
-            React.createElement('span', null, `配置文件: ${status.patchPath}`),
-          )
-        : null,
       React.createElement('div', { style: { fontSize: 12, opacity: 0.75, lineHeight: 1.6 } },
-        '使用前需要：① 打开 Figma 桌面版；② 运行「Figma UI MCP Bridge」插件；③ 在对话里告诉模型连接 figma-ui-mcp。'),
-      message !== null
-        ? React.createElement('div', { style: { fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '6px 10px' } }, message)
-        : null,
-      error !== null
-        ? React.createElement('div', { style: { fontSize: 12, color: '#ef4444' } }, error)
+        '让模型读取 Figma 设计稿并生成代码。只需要一个 Figma Personal Access Token，无需安装任何插件。'),
+      React.createElement('input', {
+        type: 'password', placeholder: 'Figma Personal Access Token（Settings → Security）',
+        value: readToken, onChange: (e: { target: { value: string } }) => setReadToken(e.target.value),
+        style: { ...inputStyle, colorScheme: 'dark' },
+      }),
+      React.createElement('input', {
+        type: 'text', placeholder: '代理地址（可选，如 http://127.0.0.1:7897）',
+        value: readProxy, onChange: (e: { target: { value: string } }) => setReadProxy(e.target.value),
+        style: inputStyle,
+      }),
+      readMessage !== null
+        ? React.createElement('div', { style: { fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '6px 10px' } }, readMessage)
         : null,
       React.createElement('div', { style: { display: 'flex', gap: 8 } },
-        React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: apply },
-          busy === 'apply' ? '写入中…' : '启用 Figma MCP'),
-        status !== null && status.configured
-          ? React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: remove },
-              busy === 'remove' ? '移除中…' : '停用')
+        React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: applyRead },
+          busy === 'read' ? '写入中…' : '启用'),
+        readCfg !== undefined && readCfg.configured
+          ? React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: removeRead }, '停用')
           : null,
       ),
     ),
   ))
+
+  // ── 区块 2: AI 主动设计（需要 Figma 插件） ──────────────────────────
+  children.push(React.createElement('div', { style: { ...GROUP, marginTop: 8 } },
+    React.createElement('div', { style: GROUP_HEAD },
+      React.createElement('span', null, '② AI 主动设计'),
+      React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } }, '需装 Figma 插件'),
+      writeCfg === undefined
+        ? null
+        : writeCfg.configured
+          ? React.createElement(Chip, { tone: 'on' }, '已启用')
+          : React.createElement(Chip, { tone: 'off' }, '未启用'),
+    ),
+    React.createElement('div', { style: { padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 } },
+      React.createElement('div', { style: { fontSize: 12, opacity: 0.75, lineHeight: 1.6 } },
+        '让模型直接在 Figma 画布上绘制/修改设计。需要 Figma 桌面版 + 运行「Figma UI MCP Bridge」插件。首次需导入插件 manifest，之后即可一键运行。'),
+      writeMessage !== null
+        ? React.createElement('div', { style: { fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '6px 10px' } }, writeMessage)
+        : null,
+      React.createElement('div', { style: { display: 'flex', gap: 8 } },
+        React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: applyWrite },
+          busy === 'write' ? '写入中…' : '启用'),
+        writeCfg !== undefined && writeCfg.configured
+          ? React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: removeWrite }, '停用')
+          : null,
+      ),
+      status !== null
+        ? React.createElement('div', { style: { fontSize: 11, opacity: 0.6 } }, `配置文件: ${status.patchPath}`)
+        : null,
+    ),
+  ))
+
   return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 720 } }, ...children)
 }
 
+/** Minimal model-directory shape read from the client runtime. */
 /** Minimal model-directory shape read from the client runtime. */
 interface ModelDirectoryLike {
   directoryFor(id: string): { store: { getSnapshot(): { current: { provider: string; model: string } | null }; subscribe(fn: () => void): () => void } }

@@ -124,8 +124,10 @@ export interface SightClearImagesResult {
  * `figma-ui-mcp` server over localhost — no token, no proxy, no Figma REST API.
  */
 export interface SightFigmaMcpStatusResult {
-  /** Whether the current profile's `cordis.patch.yml` declares the Figma MCP row. */
-  readonly configured: boolean
+  /** Design-to-code (REST, token-based) status. */
+  readonly read: SightFigmaModeStatus
+  /** AI-driven design (plugin bridge) status. */
+  readonly write: SightFigmaModeStatus
   /** The `cordis.patch.yml` absolute path (for the "restart to apply" hint). */
   readonly patchPath: string
   /** Profile name the patch belongs to (e.g. `desktop`). */
@@ -134,10 +136,28 @@ export interface SightFigmaMcpStatusResult {
   readonly error: string | null
 }
 
-/** Request payload for {@link SIGHT_RPC.figmaMcpApply} (no config needed). */
+/** Request payload for {@link SIGHT_RPC.figmaMcpApply}. */
 export interface SightFigmaMcpApplyRequest {
+  /** Which capability to configure: 'read' (token-based design-to-code) or 'write' (plugin-bridge AI design). */
+  readonly mode: 'read' | 'write'
+  /** Figma Personal Access Token (read mode only, required). */
   readonly token?: string
+  /** Optional proxy URL for restricted networks (read mode only). */
   readonly proxy?: string
+}
+
+/** Request payload for {@link SIGHT_RPC.figmaMcpRemove}. */
+export interface SightFigmaMcpRemoveRequest {
+  /** Which capability to remove. */
+  readonly mode: 'read' | 'write'
+}
+
+/** Status of one Figma MCP capability. */
+export interface SightFigmaModeStatus {
+  /** Whether the capability's row exists in `cordis.patch.yml`. */
+  readonly configured: boolean
+  /** Whether a Figma token is present in the row (read mode only). */
+  readonly hasToken: boolean
 }
 
 /** Result of {@link SIGHT_RPC.figmaMcpApply} / {@link SIGHT_RPC.figmaMcpRemove}. */
