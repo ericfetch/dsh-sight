@@ -63,6 +63,8 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-settings": "0.1.0-rc.6",
+    "figma-developer-mcp": "^0.13.2",
+    "yaml": "2.9.0",
     "zod": "^4.4.3"
   },
   "peerDependencies": {

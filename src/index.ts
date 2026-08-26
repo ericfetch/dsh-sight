@@ -21,6 +21,11 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { createRequire } from 'node:module'
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
   SIGHT_RPC,
   SIGHT_RPC_CHANNEL,
@@ -28,6 +33,9 @@ import {
   type SightApplyReasoningResult,
   type SightClearFailure,
   type SightClearImagesResult,
+  type SightFigmaMcpApplyRequest,
+  type SightFigmaMcpStatusResult,
+  type SightFigmaMcpWriteResult,
   type SightModelEntry,
   type SightProviderEntry,
   type SightReasoningChange,
@@ -41,6 +49,26 @@ export const name = 'dsh-sight'
 
 /** Settings namespace carrying the pi-ai provider profiles. */
 const NS = 'llm-pi-ai'
+
+/** Built-in DSH plugin that connects one stdio MCP server and mounts its tools. */
+const FIGMA_MCP_PLUGIN = '@deepseek-ai/dsh-mcp-client'
+
+/**
+ * Resolve the Figma MCP server entry script. `figma-developer-mcp` ships as a
+ * dependency of dsh-sight, so it lands in the profile's node_modules next to
+ * the plugin; tsdown keeps it external so the standalone bin file exists for
+ * the mcp-client child process to spawn. Falls back to the well-known npx
+ * cache location if resolution somehow fails.
+ */
+const FIGMA_MCP_BIN = ((): string => {
+  try {
+    const require = createRequire(import.meta.url)
+    const resolved = require.resolve('figma-developer-mcp/package.json')
+    return join(dirname(resolved), 'dist', 'bin.js')
+  } catch {
+    return join(homedir(), 'AppData', 'Local', 'Temp', 'figma-mcp-test', 'node_modules', 'figma-developer-mcp', 'dist', 'bin.js')
+  }
+})()
 
 /** Curated dictionary of popular multimodal models (regex against lowercase model ids). */
 const VISION_DICTIONARY: readonly { readonly re: RegExp; readonly family: string }[] = [
@@ -529,6 +557,173 @@ export function apply(ctx: Context): void {
       return { cleared, total: seqs.length, failures }
     }
 
+    // ── Figma MCP bridge ────────────────────────────────────────────────────
+    //
+    // DSH exposes a built-in `@deepseek-ai/dsh-mcp-client` that connects to any
+    // stdio MCP server and mounts its tools for the model. The Figma desktop
+    // MCP endpoint (Dev Mode) is enterprise-gated, so for personal accounts we
+    // run the community `figma-developer-mcp` package over stdio with a Figma
+    // Personal Access Token. The only wiring is a row in the profile's
+    // `cordis.patch.yml` — no MCP protocol code lives in dsh-sight.
+
+    /** Active profile name: the desktop launcher pins `desktop`; fall back to scanning. */
+    const activeProfile = (): string => {
+      const pinned = process.env.DSH_DESKTOP_DEFAULT_PROFILE
+      if (typeof pinned === 'string' && pinned.length > 0) return pinned
+      try {
+        const dir = join(dshHome(), 'profiles')
+        if (existsSync(dir)) {
+          const candidates = readdirSync(dir).filter(name => existsSync(join(dir, name, 'cordis.patch.yml')))
+          const single = candidates[0]
+          if (candidates.length === 1 && single !== undefined) return single
+        }
+      } catch { /* fall through to default */ }
+      return 'desktop'
+    }
+
+    /** DSH home directory: `$DSH_HOME` else `~/.dsh`. */
+    const dshHome = (): string => {
+      const env = process.env.DSH_HOME
+      return typeof env === 'string' && env.trim().length > 0 ? env.trim() : join(homedir(), '.dsh')
+    }
+
+    /** Absolute path of the active profile's patch layer. */
+    const patchPath = (): string => join(dshHome(), 'profiles', activeProfile(), 'cordis.patch.yml')
+
+    /** Read the patch file as a mutable array of top-level patch entries. */
+    const readPatch = (): unknown[] => {
+      const file = patchPath()
+      if (!existsSync(file)) return []
+      const text = readFileSync(file, 'utf8')
+      const stripped = text.replace(/^\uFEFF/, '')
+      try {
+        const value = parseYaml(stripped)
+        return Array.isArray(value) ? value as unknown[] : []
+      } catch {
+        throw new Error(`cannot parse ${file}`)
+      }
+    }
+
+    /** Find the `insert` entry that carries the Figma MCP row. */
+    const findFigmaRow = (patch: unknown[]): { insertEntry: Record<string, unknown>; row: Record<string, unknown>; index: number } | null => {
+      for (const entry of patch) {
+        if (entry === null || typeof entry !== 'object') continue
+        const e = entry as Record<string, unknown>
+        if (typeof e.insert !== 'object' || e.insert === null) continue
+        const list = Array.isArray(e.insert) ? e.insert : [e.insert]
+        for (let i = 0; i < list.length; i++) {
+          const row = list[i]
+          if (row === null || typeof row !== 'object') continue
+          const r = row as Record<string, unknown>
+          if (r.name === FIGMA_MCP_PLUGIN) return { insertEntry: e, row: r, index: i }
+        }
+      }
+      return null
+    }
+
+    /** Serialize the patch array back to the file (UTF-8, no BOM). */
+    const writePatch = (patch: unknown[]): void => {
+      const file = patchPath()
+      const dir = dirname(file)
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+      writeFileSync(file, stringifyYaml(patch), 'utf8')
+    }
+
+    /** Status: whether the Figma MCP row exists and what it holds (never the token). */
+    const figmaMcpStatus = (): SightFigmaMcpStatusResult => {
+      const file = patchPath()
+      try {
+        const patch = readPatch()
+        const found = findFigmaRow(patch)
+        let hasToken = false
+        let proxy: string | null = null
+        let command: string | null = null
+        if (found !== null) {
+          const config = found.row.config
+          if (config !== null && typeof config === 'object') {
+            const c = config as Record<string, unknown>
+            if (c.env !== null && typeof c.env === 'object') {
+              const env = c.env as Record<string, unknown>
+              hasToken = typeof env.FIGMA_API_KEY === 'string' && env.FIGMA_API_KEY.length > 0
+              const p = env.HTTPS_PROXY ?? env.FIGMA_PROXY
+              if (typeof p === 'string' && p.length > 0) proxy = p
+            }
+            if (Array.isArray(c.args)) {
+              const cmd = String(c.args[0] ?? '')
+              if (cmd.length > 0) command = cmd
+            }
+          }
+        }
+        return { configured: found !== null, patchPath: file, profile: activeProfile(), hasToken, proxy, command, error: null }
+      } catch (error) {
+        return {
+          configured: false,
+          patchPath: file,
+          profile: activeProfile(),
+          hasToken: false,
+          proxy: null,
+          command: null,
+          error: error instanceof Error ? error.message : String(error),
+        }
+      }
+    }
+
+    /** Write (or update) the Figma MCP row. Returns without touching other rows. */
+    const figmaMcpApply = async (req: SightFigmaMcpApplyRequest): Promise<SightFigmaMcpWriteResult> => {
+      const token = typeof req.token === 'string' ? req.token.trim() : ''
+      if (token.length === 0) return { ok: false, patchPath: patchPath(), error: 'Figma token is required' }
+      const proxy = typeof req.proxy === 'string' && req.proxy.trim().length > 0 ? req.proxy.trim() : null
+      const env: Record<string, string> = { FIGMA_API_KEY: token }
+      if (proxy !== null) {
+        env.HTTPS_PROXY = proxy
+        env.HTTP_PROXY = proxy
+        env.FIGMA_PROXY = proxy
+      }
+      const row = {
+        id: 'figma-mcp',
+        name: FIGMA_MCP_PLUGIN,
+        config: {
+          transport: 'stdio',
+          serverName: 'figma',
+          command: 'node',
+          args: [FIGMA_MCP_BIN, '--stdio'],
+          env,
+        },
+      }
+      try {
+        const patch = readPatch()
+        const found = findFigmaRow(patch)
+        if (found !== null) {
+          const list = Array.isArray(found.insertEntry.insert) ? found.insertEntry.insert : [found.insertEntry.insert]
+          list[found.index] = row
+          if (!Array.isArray(found.insertEntry.insert)) found.insertEntry.insert = list
+        } else {
+          patch.push({ insert: [row] })
+        }
+        writePatch(patch)
+        return { ok: true, patchPath: patchPath(), error: null }
+      } catch (error) {
+        return { ok: false, patchPath: patchPath(), error: error instanceof Error ? error.message : String(error) }
+      }
+    }
+
+    /** Remove the Figma MCP row. */
+    const figmaMcpRemove = (): SightFigmaMcpWriteResult => {
+      try {
+        const patch = readPatch()
+        const found = findFigmaRow(patch)
+        if (found !== null) {
+          const list = Array.isArray(found.insertEntry.insert) ? found.insertEntry.insert : [found.insertEntry.insert]
+          list.splice(found.index, 1)
+          if (!Array.isArray(found.insertEntry.insert)) found.insertEntry.insert = list
+        }
+        writePatch(patch)
+        return { ok: true, patchPath: patchPath(), error: null }
+      } catch (error) {
+        return { ok: false, patchPath: patchPath(), error: error instanceof Error ? error.message : String(error) }
+      }
+    }
+
     const handler: ConnectionRpcHandler = async (endpoint, payload) => {
       try {
         switch (endpoint) {
@@ -563,6 +758,14 @@ export function apply(ctx: Context): void {
             if (typeof p.sessionId !== 'string') return fail('clearImages requires { sessionId }')
             return ok(await clearImages(p.sessionId))
           }
+          case SIGHT_RPC.figmaMcpStatus:
+            return ok(figmaMcpStatus())
+          case SIGHT_RPC.figmaMcpApply: {
+            const p = payload as Partial<SightFigmaMcpApplyRequest>
+            return ok(await figmaMcpApply(p as SightFigmaMcpApplyRequest))
+          }
+          case SIGHT_RPC.figmaMcpRemove:
+            return ok(figmaMcpRemove())
           default:
             return fail(`unknown dsh-sight endpoint "${String(endpoint)}"`)
         }

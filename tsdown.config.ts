@@ -26,6 +26,14 @@ const CLIENT_EXTERNALS: readonly string[] = [
 
 const VENDORED_LIBRARY = /^@deepseek-ai\/(cosmokit|schemastery)(\/|$)/
 
+/**
+ * Packages that must stay as real installed modules rather than being bundled:
+ * `figma-developer-mcp` is spawned as a SEPARATE child process by the mcp-client
+ * bridge, so it needs a standalone `dist/bin.js` on disk (bundling would inline
+ * it into lib/index.js and leave nothing for the child to execute).
+ */
+const NODE_EXTERNALS: readonly string[] = ['figma-developer-mcp']
+
 const nodeLibrary: UserConfig = {
   name: PACKAGE_ID,
   entry: ['src/index.ts'],
@@ -36,6 +44,7 @@ const nodeLibrary: UserConfig = {
   fixedExtension: false,
   dts: false,
   clean: false,
+  external: [...NODE_EXTERNALS],
 }
 
 const clientBundle: UserConfig = {
