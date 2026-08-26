@@ -37,6 +37,7 @@ import {
   type SightFigmaMcpRemoveRequest,
   type SightFigmaMcpStatusResult,
   type SightFigmaMcpWriteResult,
+  type SightFigmaModeStatus,
   type SightModelEntry,
   type SightProviderEntry,
   type SightReasoningChange,
@@ -637,9 +638,9 @@ export function apply(ctx: Context): void {
       return null
     }
 
-    /** Read one mode's presence + token flag from a found row. */
-    const rowStatus = (found: { row: Record<string, unknown> } | null): { configured: boolean; hasToken: boolean } => {
-      if (found === null) return { configured: false, hasToken: false }
+    /** Read one mode's presence + token flag + manifest path from a found row. */
+    const rowStatus = (mode: 'read' | 'write', found: { row: Record<string, unknown> } | null): SightFigmaModeStatus => {
+      if (found === null) return { configured: false, hasToken: false, manifestPath: null }
       let hasToken = false
       const config = found.row.config
       if (config !== null && typeof config === 'object') {
@@ -649,7 +650,18 @@ export function apply(ctx: Context): void {
           hasToken = typeof env.FIGMA_API_KEY === 'string' && env.FIGMA_API_KEY.length > 0
         }
       }
-      return { configured: true, hasToken }
+      // Resolve the Figma plugin manifest path for the write bridge, so the UI
+      // can guide the user to import the exact file in Figma Desktop.
+      let manifestPath: string | null = null
+      if (mode === 'write') {
+        try {
+          const require = createRequire(import.meta.url)
+          const resolved = require.resolve('figma-ui-mcp/package.json')
+          const candidate = join(dirname(resolved), 'plugin', 'manifest.json')
+          if (existsSync(candidate)) manifestPath = candidate
+        } catch { /* fall through */ }
+      }
+      return { configured: true, hasToken, manifestPath }
     }
 
     /** Serialize the patch array back to the file (UTF-8, no BOM). */
@@ -666,16 +678,16 @@ export function apply(ctx: Context): void {
       try {
         const patch = readPatch()
         return {
-          read: rowStatus(findFigmaRow(patch, 'read')),
-          write: rowStatus(findFigmaRow(patch, 'write')),
+          read: rowStatus('read', findFigmaRow(patch, 'read')),
+          write: rowStatus('write', findFigmaRow(patch, 'write')),
           patchPath: file,
           profile: activeProfile(),
           error: null,
         }
       } catch (error) {
         return {
-          read: { configured: false, hasToken: false },
-          write: { configured: false, hasToken: false },
+          read: { configured: false, hasToken: false, manifestPath: null },
+          write: { configured: false, hasToken: false, manifestPath: null },
           patchPath: file,
           profile: activeProfile(),
           error: error instanceof Error ? error.message : String(error),

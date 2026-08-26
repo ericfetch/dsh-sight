@@ -158,6 +158,8 @@ export interface SightFigmaModeStatus {
   readonly configured: boolean
   /** Whether a Figma token is present in the row (read mode only). */
   readonly hasToken: boolean
+  /** Absolute path of the Figma plugin manifest (write mode only, to import). */
+  readonly manifestPath: string | null
 }
 
 /** Result of {@link SIGHT_RPC.figmaMcpApply} / {@link SIGHT_RPC.figmaMcpRemove}. */
