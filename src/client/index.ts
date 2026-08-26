@@ -113,11 +113,6 @@ function SightPage(): ReactElement {
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState('')
   const [reasoningResult, setReasoningResult] = React.useState<SightApplyReasoningResult | null>(null)
-  const [figmaStatus, setFigmaStatus] = React.useState<SightFigmaMcpStatusResult | null>(null)
-  const [figmaToken, setFigmaToken] = React.useState('')
-  const [figmaProxy, setFigmaProxy] = React.useState('')
-  const [figmaMessage, setFigmaMessage] = React.useState<string | null>(null)
-  const [figmaError, setFigmaError] = React.useState<string | null>(null)
 
   const load = React.useCallback(() => {
     rpc<SightStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.status, {})
@@ -151,54 +146,6 @@ function SightPage(): ReactElement {
     rpc<SightApplyReasoningResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.applyReasoning, {})
       .then(value => { setReasoningResult(value); load() })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setBusy(''))
-  }
-
-  const loadFigma = React.useCallback(() => {
-    rpc<SightFigmaMcpStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpStatus, {})
-      .then(value => {
-        setFigmaStatus(value)
-        setFigmaProxy(value.proxy ?? '')
-      })
-      .catch((e: unknown) => setFigmaError(e instanceof Error ? e.message : String(e)))
-  }, [])
-
-  React.useEffect(() => { loadFigma() }, [loadFigma])
-
-  const applyFigma = (): void => {
-    if (busy !== '') return
-    if (figmaToken.trim().length === 0) { setFigmaError('请填写 Figma Personal Access Token'); return }
-    setBusy('figma-apply')
-    setFigmaMessage(null); setFigmaError(null)
-    const trimmedToken = figmaToken.trim()
-    const trimmedProxy = figmaProxy.trim()
-    const req: SightFigmaMcpApplyRequest = trimmedProxy.length > 0
-      ? { token: trimmedToken, proxy: trimmedProxy }
-      : { token: trimmedToken }
-    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpApply, req)
-      .then(value => {
-        setFigmaToken('')
-        setFigmaMessage(value.ok
-          ? `已写入 ${value.patchPath}。请重启 DSH Desktop 使 Figma MCP 工具生效。`
-          : `写入失败: ${value.error ?? 'unknown'}`)
-        loadFigma()
-      })
-      .catch((e: unknown) => setFigmaError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setBusy(''))
-  }
-
-  const removeFigma = (): void => {
-    if (busy !== '') return
-    setBusy('figma-remove')
-    setFigmaMessage(null); setFigmaError(null)
-    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpRemove, {})
-      .then(value => {
-        setFigmaMessage(value.ok
-          ? `已从 ${value.patchPath} 移除 Figma MCP 配置。`
-          : `移除失败: ${value.error ?? 'unknown'}`)
-        loadFigma()
-      })
-      .catch((e: unknown) => setFigmaError(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(''))
   }
 
@@ -276,62 +223,118 @@ function SightPage(): ReactElement {
     }
   }
 
-  // ── Figma MCP bridge ─────────────────────────────────────────────────────
-  children.push(React.createElement('div', { style: { ...GROUP, marginTop: 8 } },
+  return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 720 } }, ...children)
+}
+
+/** Independent settings page for the Figma MCP bridge (own sidebar entry). */
+function FigmaMcpPage(): ReactElement {
+  const [status, setStatus] = React.useState<SightFigmaMcpStatusResult | null>(null)
+  const [token, setToken] = React.useState('')
+  const [proxy, setProxy] = React.useState('')
+  const [busy, setBusy] = React.useState('')
+  const [message, setMessage] = React.useState<string | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+
+  const load = React.useCallback(() => {
+    rpc<SightFigmaMcpStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpStatus, {})
+      .then(value => { setStatus(value); setProxy(value.proxy ?? '') })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+  }, [])
+
+  React.useEffect(() => { load() }, [load])
+
+  const apply = (): void => {
+    if (busy !== '') return
+    if (token.trim().length === 0) { setError('请填写 Figma Personal Access Token'); return }
+    setBusy('apply')
+    setMessage(null); setError(null)
+    const trimmedToken = token.trim()
+    const trimmedProxy = proxy.trim()
+    const req: SightFigmaMcpApplyRequest = trimmedProxy.length > 0
+      ? { token: trimmedToken, proxy: trimmedProxy }
+      : { token: trimmedToken }
+    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpApply, req)
+      .then(value => {
+        setToken('')
+        setMessage(value.ok
+          ? `已写入 ${value.patchPath}。请重启 DSH Desktop 使 Figma MCP 工具生效。`
+          : `写入失败: ${value.error ?? 'unknown'}`)
+        load()
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(''))
+  }
+
+  const remove = (): void => {
+    if (busy !== '') return
+    setBusy('remove')
+    setMessage(null); setError(null)
+    rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpRemove, {})
+      .then(value => {
+        setMessage(value.ok
+          ? `已从 ${value.patchPath} 移除 Figma MCP 配置。`
+          : `移除失败: ${value.error ?? 'unknown'}`)
+        load()
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(''))
+  }
+
+  const children: ReactNode[] = []
+  children.push(React.createElement('h2', { style: { margin: 0, fontSize: 16, fontWeight: 600 } }, 'Figma MCP'))
+  children.push(React.createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.75, lineHeight: 1.6 } },
+    '把 Figma 设计稿数据接入模型：填写 Figma Personal Access Token 后写入 profile 的 ' +
+    'cordis.patch.yml，通过 DSH 内置 mcp-client 挂载 Figma MCP 工具（get_figma_data / ' +
+    'download_figma_images）。需要网络代理时填写代理地址。写入后请重启 DSH Desktop 生效。'))
+  children.push(React.createElement('div', { style: { ...GROUP, marginTop: 4 } },
     React.createElement('div', { style: GROUP_HEAD },
-      React.createElement('span', null, 'Figma MCP'),
-      figmaStatus === null
+      React.createElement('span', null, '连接'),
+      status === null
         ? null
-        : figmaStatus.configured
+        : status.configured
           ? React.createElement(Chip, { tone: 'on' }, '已配置')
           : React.createElement(Chip, { tone: 'off' }, '未配置'),
     ),
     React.createElement('div', { style: { padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 } },
-      React.createElement('p', { style: { margin: 0, fontSize: 12, opacity: 0.8, lineHeight: 1.6 } },
-        '把 Figma 设计稿数据接入模型：填写 Figma Personal Access Token 后一键写入 ' +
-        'profile 的 cordis.patch.yml，通过 DSH 内置 mcp-client 挂载 Figma MCP 工具 ' +
-        '（get_figma_data / download_figma_images）。需要网络代理时填写代理地址。' +
-        '写入后请重启 DSH Desktop 生效。'),
-      figmaStatus !== null && figmaStatus.error !== null
-        ? React.createElement('div', { style: { color: '#ef4444', fontSize: 12 } }, `读取配置失败: ${figmaStatus.error}`)
+      status !== null && status.error !== null
+        ? React.createElement('div', { style: { color: '#ef4444', fontSize: 12 } }, `读取配置失败: ${status.error}`)
         : null,
       React.createElement('input', {
         type: 'password',
         placeholder: 'Figma Personal Access Token（Settings → Security）',
-        value: figmaToken,
-        onChange: (e: { target: { value: string } }) => setFigmaToken(e.target.value),
+        value: token,
+        onChange: (e: { target: { value: string } }) => setToken(e.target.value),
         style: { ...INPUT_STYLE, colorScheme: 'dark' },
       }),
       React.createElement('input', {
         type: 'text',
         placeholder: '代理地址（可选，如 http://127.0.0.1:7897）',
-        value: figmaProxy,
-        onChange: (e: { target: { value: string } }) => setFigmaProxy(e.target.value),
+        value: proxy,
+        onChange: (e: { target: { value: string } }) => setProxy(e.target.value),
         style: INPUT_STYLE,
       }),
-      figmaStatus !== null && figmaStatus.configured
+      status !== null && status.configured
         ? React.createElement('div', { style: { fontSize: 12, opacity: 0.75, display: 'flex', flexDirection: 'column', gap: 2 } },
-            React.createElement('span', null, `配置文件: ${figmaStatus.patchPath}`),
-            React.createElement('span', null, `Token: ${figmaStatus.hasToken ? '已配置' : '缺失'} · 代理: ${figmaStatus.proxy ?? '无'}`),
+            React.createElement('span', null, `配置文件: ${status.patchPath}`),
+            React.createElement('span', null, `Token: ${status.hasToken ? '已配置' : '缺失'} · 代理: ${status.proxy ?? '无'}`),
           )
         : null,
-      figmaMessage !== null
-        ? React.createElement('div', { style: { fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '6px 10px' } }, figmaMessage)
+      message !== null
+        ? React.createElement('div', { style: { fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '6px 10px' } }, message)
         : null,
-      figmaError !== null
-        ? React.createElement('div', { style: { fontSize: 12, color: '#ef4444' } }, figmaError)
+      error !== null
+        ? React.createElement('div', { style: { fontSize: 12, color: '#ef4444' } }, error)
         : null,
       React.createElement('div', { style: { display: 'flex', gap: 8 } },
-        React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: applyFigma },
-          busy === 'figma-apply' ? '写入中…' : '写入配置'),
-        figmaStatus !== null && figmaStatus.configured
-          ? React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: removeFigma },
-              busy === 'figma-remove' ? '移除中…' : '移除配置')
+        React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: apply },
+          busy === 'apply' ? '写入中…' : '写入配置'),
+        status !== null && status.configured
+          ? React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: remove },
+              busy === 'remove' ? '移除中…' : '移除配置')
           : null,
       ),
     ),
   ))
-
   return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 720 } }, ...children)
 }
 
@@ -464,6 +467,11 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('settings.section', () => ctx.slots.register(
     { name: 'settings.section', id: 'sight-vision', order: 12, label: () => '多模态图片直传' },
     () => React.createElement(SightPage, null),
+  ))
+
+  ctx.slots.inject('settings.section', () => ctx.slots.register(
+    { name: 'settings.section', id: 'sight-figma-mcp', order: 13, label: () => 'Figma MCP' },
+    () => React.createElement(FigmaMcpPage, null),
   ))
 
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register(
