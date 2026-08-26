@@ -37,7 +37,6 @@ import {
   type SightFigmaMcpRemoveRequest,
   type SightFigmaMcpStatusResult,
   type SightFigmaMcpWriteResult,
-  type SightFigmaModeStatus,
   type SightModelEntry,
   type SightProviderEntry,
   type SightReasoningChange,
@@ -638,9 +637,9 @@ export function apply(ctx: Context): void {
       return null
     }
 
-    /** Read one mode's presence + token flag + manifest path from a found row. */
-    const rowStatus = (mode: 'read' | 'write', found: { row: Record<string, unknown> } | null): SightFigmaModeStatus => {
-      if (found === null) return { configured: false, hasToken: false, manifestPath: null }
+    /** Read one mode's presence + token flag from a found row. */
+    const rowStatus = (found: { row: Record<string, unknown> } | null): { configured: boolean; hasToken: boolean } => {
+      if (found === null) return { configured: false, hasToken: false }
       let hasToken = false
       const config = found.row.config
       if (config !== null && typeof config === 'object') {
@@ -650,18 +649,19 @@ export function apply(ctx: Context): void {
           hasToken = typeof env.FIGMA_API_KEY === 'string' && env.FIGMA_API_KEY.length > 0
         }
       }
-      // Resolve the Figma plugin manifest path for the write bridge, so the UI
-      // can guide the user to import the exact file in Figma Desktop.
-      let manifestPath: string | null = null
-      if (mode === 'write') {
-        try {
-          const require = createRequire(import.meta.url)
-          const resolved = require.resolve('figma-ui-mcp/package.json')
-          const candidate = join(dirname(resolved), 'plugin', 'manifest.json')
-          if (existsSync(candidate)) manifestPath = candidate
-        } catch { /* fall through */ }
+      return { configured: true, hasToken }
+    }
+
+    /** Resolve the Figma plugin manifest path for the write bridge (unconditional — the package ships as a dep). */
+    const figmaManifestPath = (): string | null => {
+      try {
+        const require = createRequire(import.meta.url)
+        const resolved = require.resolve('figma-ui-mcp/package.json')
+        const candidate = join(dirname(resolved), 'plugin', 'manifest.json')
+        return existsSync(candidate) ? candidate : null
+      } catch {
+        return null
       }
-      return { configured: true, hasToken, manifestPath }
     }
 
     /** Serialize the patch array back to the file (UTF-8, no BOM). */
@@ -677,9 +677,15 @@ export function apply(ctx: Context): void {
       const file = patchPath()
       try {
         const patch = readPatch()
+        // The manifest path is available regardless of whether the write row is
+        // configured (the package ships as a dependency), so the UI guides the
+        // user to import it BEFORE enabling.
+        const manifest = figmaManifestPath()
+        const read = rowStatus(findFigmaRow(patch, 'read'))
+        const write = rowStatus(findFigmaRow(patch, 'write'))
         return {
-          read: rowStatus('read', findFigmaRow(patch, 'read')),
-          write: rowStatus('write', findFigmaRow(patch, 'write')),
+          read: { ...read, manifestPath: null },
+          write: { ...write, manifestPath: manifest },
           patchPath: file,
           profile: activeProfile(),
           error: null,
