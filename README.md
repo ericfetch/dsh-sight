@@ -65,6 +65,17 @@ DeepSeek Harness（DSH）插件：**多模态图片直传** + **会话图片清�
 
 > 两个区块相互独立：可以只开 ① 不装插件，需要 AI 画图时才去 ②。（服务可冗余，都启用时两个 server 各自运行。）
 
+#### ✅ 无需开通 Figma 会员
+
+插件走的是社区开源 MCP（`figma-developer-mcp` + `figma-ui-mcp`），**不依赖 Figma 的任何付费功能**：
+
+| 能力 | 依赖 | 需要会员吗 |
+| --- | --- | --- |
+| ① 设计稿 → 代码 | 个人 access token（REST API） | ❌ 免费账号即可生成 token |
+| ② AI 主动设计 | Figma 桌面版 + 插件（localhost 桥） | ❌ 免费账号即可装插件 |
+
+> 对比官方 Figma MCP：远程 server 需要 OAuth，且按套餐/席位限流（View/Collab 席位每月仅约 6 次调用，写画布要求 Dev/Full 席位）。本插件用免费账号即可跑通全部能力，无套餐门槛。
+
 ## 安装
 
 ### 方式一：npm（推荐）
