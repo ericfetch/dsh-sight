@@ -1,7 +1,7 @@
 {
   "name": "@eric.wen/dsh-sight",
   "version": "0.1.11",
-  "description": "DeepSeek Harness plugin: direct multimodal image transfer declarations + per-session image clearing (surface replace), with a settings page and composer controls.",
+  "description": "DeepSeek Harness plugin: direct multimodal image transfer declarations + per-session image clearing, reasoning-effort auto-fill, and progressive Figma MCP bridging (design-to-code + AI-driven design).",
   "license": "MIT",
   "type": "module",
   "engines": {
