@@ -106,13 +106,12 @@ dsh --profile desktop --dump-config   # 应出现 "# == @eric.wen/dsh-sight" 补
 
 ## 升级
 
-发布新版本后，**不需要卸载重装**——pnpm 按已声明的版本范围自动拉取最新：
+发布新版本后，**不需要卸载重装**——通过 `--latest` 参数直接升级到 npm 最新版：
 
 ```sh
-dsh plugin --profile desktop update @eric.wen/dsh-sight
+dsh plugin --profile desktop update --latest @eric.wen/dsh-sight
 ```
 
-- 安装时声明的是 `^0.1.x`（允许小版本升级），`update` 会拉到范围内最新版；
 - 想锁死大版本范围或装指定版本：`dsh plugin --profile desktop add @eric.wen/dsh-sight@0.1.4`；
 - 更新后**重启 DSH Desktop** 生效。
 
