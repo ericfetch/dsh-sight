@@ -81,6 +81,10 @@ function ModelRow(props: { model: SightModelEntry; provider: string; busy: strin
       ? React.createElement(Chip, { tone: 'info' }, `推理(声明): ${model.reasoning.levels.join('/')}`)
       : React.createElement(Chip, { tone: 'on' }, `推理: ${model.reasoning.levels.join('/')}`)
   const working = busy === `${provider}/${model.id}`
+  // The official DeepSeek channel's adapter is text-only and rejects image
+  // content, so its model rows cannot actually accept direct images — disable
+  // the toggle instead of letting the user flip a switch that cannot work.
+  const visionLocked = provider === 'deepseek-official'
   return React.createElement(
     'div',
     { style: ROW },
@@ -93,8 +97,14 @@ function ModelRow(props: { model: SightModelEntry; provider: string; busy: strin
     reasoningChip,
     React.createElement(
       'button',
-      { type: 'button', style: BUTTON, disabled: busy !== '' || working, onClick: () => onToggle(provider, model.id, !model.vision) },
-      working ? '处理中…' : model.vision ? '取消直传标记' : '启用图片直传',
+      {
+        type: 'button',
+        style: BUTTON,
+        disabled: busy !== '' || working || visionLocked,
+        onClick: () => onToggle(provider, model.id, !model.vision),
+        title: visionLocked ? 'DeepSeek 官方渠道当前不支持图片直传' : undefined,
+      },
+      visionLocked ? '不支持图片直传' : (working ? '处理中…' : (model.vision ? '取消直传标记' : '启用图片直传')),
     ),
   )
 }

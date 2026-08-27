@@ -51,6 +51,10 @@ export const name = 'dsh-sight'
 /** Settings namespace carrying the pi-ai provider profiles. */
 const NS = 'llm-pi-ai'
 
+/** Settings namespace + provider route for the official DeepSeek channel (a distinct adapter, not a pi-ai provider). */
+const DEEPSEEK_NS = 'llm-deepseek'
+const DEEPSEEK_PROVIDER = 'deepseek-official'
+
 /** Built-in DSH plugin that connects one stdio MCP server and mounts its tools. */
 const FIGMA_MCP_PLUGIN = '@deepseek-ai/dsh-mcp-client'
 
@@ -97,6 +101,12 @@ const VISION_DICTIONARY: readonly { readonly re: RegExp; readonly family: string
   { re: /^claude-3-5-/, family: 'Anthropic Claude 3.5' },
   { re: /^claude-3-7-/, family: 'Anthropic Claude 3.7' },
   { re: /^claude-4-/, family: 'Anthropic Claude 4' },
+  { re: /^claude-opus-4/, family: 'Anthropic Claude Opus 4' },
+  { re: /^claude-sonnet-4/, family: 'Anthropic Claude Sonnet 4' },
+  { re: /^claude-haiku-4/, family: 'Anthropic Claude Haiku 4' },
+  { re: /^claude-opus-/, family: 'Anthropic Claude Opus' },
+  { re: /^claude-sonnet-/, family: 'Anthropic Claude Sonnet' },
+  { re: /^claude-haiku-/, family: 'Anthropic Claude Haiku' },
   { re: /^claude-3-/, family: 'Anthropic Claude 3' },
   { re: /^moonshot-v1-.*-vision-preview/, family: 'Kimi (Moonshot)' },
   { re: /^kimi-vl/, family: 'Kimi (Moonshot)' },
@@ -344,6 +354,56 @@ export function apply(ctx: Context): void {
           }
           providers.push({ provider, name: profile?.displayName ?? provider, models, error })
         }
+      }
+      // The official DeepSeek channel is a distinct adapter (deepseek-official)
+      // configured under the llm-deepseek namespace, not a pi-ai provider. List
+      // it as its own group so its models appear on the settings page. Its
+      // adapter reports text-only inputModalities, so models render as
+      // "text-only" — that is the platform's real capability, not a missing
+      // declaration.
+      try {
+        const deepseekSection = settings.get(DEEPSEEK_NS) as { models?: readonly RawModel[] } | undefined
+        const deepseekModels = Array.isArray(deepseekSection?.models) ? deepseekSection.models : []
+        if (deepseekModels.length > 0) {
+          const models: SightModelEntry[] = await Promise.all(deepseekModels.map(async (dm): Promise<SightModelEntry> => {
+            const id = typeof dm?.id === 'string' ? dm.id : ''
+            if (id.length === 0) return { id: '', name: '', vision: false, declared: false, matched: null, source: 'none', reasoning: null }
+            let vision = false
+            let adapterReasoning: readonly { id?: string; name?: string }[] | undefined
+            try {
+              const info = await llm.resolveModelInfo(DEEPSEEK_PROVIDER, id)
+              vision = Array.isArray(info.inputModalities) && info.inputModalities.includes('image')
+              adapterReasoning = info.reasoning?.efforts
+            } catch {
+              vision = false
+            }
+            const matched = familyOf(id)
+            const declared = Array.isArray(dm.input) && dm.input.includes('image')
+            const reasoning = ((): SightModelEntry['reasoning'] => {
+              if (Array.isArray(adapterReasoning)) {
+                const levels = adapterReasoning.map(e => (typeof e?.id === 'string' && e.id.length > 0 ? e.id : undefined))
+                  .filter((l): l is string => l !== undefined)
+                if (levels.length > 0) return { source: 'adapter', levels }
+              }
+              if (dm?.reasoningEfforts !== undefined && dm.reasoningEfforts !== false && dm.reasoningEfforts !== null) {
+                return { source: 'declared', levels: Object.keys(dm.reasoningEfforts) }
+              }
+              return null
+            })()
+            return {
+              id,
+              name: typeof dm?.name === 'string' && dm.name.length > 0 ? dm.name : id,
+              vision,
+              declared,
+              matched: matched === undefined ? null : matched,
+              source: declared ? 'declared' : vision ? 'adapter' : matched === undefined ? 'none' : 'dictionary',
+              reasoning,
+            }
+          }))
+          providers.push({ provider: DEEPSEEK_PROVIDER, name: 'DeepSeek 官方', models, error: null })
+        }
+      } catch (de) {
+        providers.push({ provider: DEEPSEEK_PROVIDER, name: 'DeepSeek 官方', models: [], error: de instanceof Error ? de.message : String(de) })
       }
       return { namespace: NS, dictionary, reasoningDictionary, providers }
     }
