@@ -240,8 +240,6 @@ function SightPage(): ReactElement {
 function FigmaMcpPage(): ReactElement {
   const [status, setStatus] = React.useState<SightFigmaMcpStatusResult | null>(null)
   const [busy, setBusy] = React.useState('')
-  const [readToken, setReadToken] = React.useState('')
-  const [readProxy, setReadProxy] = React.useState('')
   const [readMessage, setReadMessage] = React.useState<string | null>(null)
   const [writeMessage, setWriteMessage] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
@@ -256,18 +254,12 @@ function FigmaMcpPage(): ReactElement {
 
   const applyRead = (): void => {
     if (busy !== '') return
-    if (readToken.trim().length === 0) { setError('请填写 Figma Personal Access Token'); return }
     setBusy('read')
     setReadMessage(null); setError(null)
-    const trimmedToken = readToken.trim()
-    const trimmedProxy = readProxy.trim()
-    const req: SightFigmaMcpApplyRequest = trimmedProxy.length > 0
-      ? { mode: 'read', token: trimmedToken, proxy: trimmedProxy }
-      : { mode: 'read', token: trimmedToken }
+    const req: SightFigmaMcpApplyRequest = { mode: 'read' }
     rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpApply, req)
       .then(value => {
-        setReadToken('')
-        setReadMessage(value.ok ? '已启用，请重启 DSH Desktop 生效。' : `写入失败: ${value.error ?? 'unknown'}`)
+        setReadMessage(value.ok ? '已启用，请先在 Figma Desktop 运行插件，再重启 DSH Desktop 生效。' : `写入失败: ${value.error ?? 'unknown'}`)
         load()
       })
       .catch((e: unknown) => setError(formatErrorMessage(e)))
@@ -307,15 +299,10 @@ function FigmaMcpPage(): ReactElement {
       .finally(() => setBusy(''))
   }
 
-  const inputStyle: CSSProperties = {
-    border: '1px solid rgba(128,128,128,0.35)', background: 'transparent', color: 'inherit',
-    borderRadius: 6, padding: '6px 10px', fontSize: 12, width: '100%', boxSizing: 'border-box',
-  }
-
   const children: ReactNode[] = []
   children.push(React.createElement('h2', { style: { margin: 0, fontSize: 16, fontWeight: 600 } }, 'Figma MCP'))
   children.push(React.createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.75, lineHeight: 1.6 } },
-    '分两步接入 Figma：先用 Token 读取设计稿生成代码；需要 AI 直接在 Figma 里画图时，再启用插件桥接。'))
+    '分两步接入 Figma：先用只读插件读取设计稿生成代码；需要 AI 直接修改画布时，再单独启用写入能力。'))
 
   if (error !== null) {
     children.push(React.createElement('div', {
@@ -334,11 +321,11 @@ function FigmaMcpPage(): ReactElement {
   const readCfg = status?.read
   const writeCfg = status?.write
 
-  // ── 区块 1: 设计稿 → 代码（Token，零插件） ──────────────────────────
+  // ── 区块 1: 设计稿 → 代码（本地只读插件） ─────────────────────────
   children.push(React.createElement('div', { style: GROUP },
     React.createElement('div', { style: GROUP_HEAD },
       React.createElement('span', null, '① 设计稿 → 代码'),
-      React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } }, '只填 Token'),
+      React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } }, '只读插件'),
       readCfg === undefined
         ? null
         : readCfg.configured
@@ -347,23 +334,24 @@ function FigmaMcpPage(): ReactElement {
     ),
     React.createElement('div', { style: { padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 } },
       React.createElement('div', { style: { fontSize: 12, opacity: 0.75, lineHeight: 1.6 } },
-        '让模型读取 Figma 设计稿并生成代码。只需要一个 Figma Personal Access Token，无需安装任何插件。'),
-      React.createElement('input', {
-        type: 'password', placeholder: 'Figma Personal Access Token（Settings → Security）',
-        value: readToken, onChange: (e: { target: { value: string } }) => setReadToken(e.target.value),
-        style: { ...inputStyle, colorScheme: 'dark' },
-      }),
-      React.createElement('input', {
-        type: 'text', placeholder: '代理地址（可选，如 http://127.0.0.1:7897）',
-        value: readProxy, onChange: (e: { target: { value: string } }) => setReadProxy(e.target.value),
-        style: inputStyle,
-      }),
+        '让模型读取 Figma 设计稿并生成代码。数据通过 Figma Desktop 本地插件桥接，不调用 Figma REST API，不需要 Token 或代理。只能读取画布，不能创建、修改、删除节点。'),
+      React.createElement('div', { style: { fontSize: 12, opacity: 0.85, lineHeight: 1.7, background: 'rgba(128,128,128,0.08)', borderRadius: 6, padding: '8px 10px', border: '1px solid rgba(128,128,128,0.2)' } },
+        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '首次安装（一次性）'),
+        React.createElement('div', null, '① 打开 Figma Desktop（网页版无法连接 localhost）'),
+        React.createElement('div', null, '② Plugins → Development → Import plugin from manifest...'),
+        React.createElement('div', null, '③ 选择下面的 manifest.json 路径'),
+        React.createElement('div', { style: { fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all', marginTop: 2, opacity: 0.8 } },
+          readCfg?.manifestPath ?? '（路径加载中…）'),
+        React.createElement('div', { style: { marginTop: 4 } }, '④ 运行「Figma UI MCP Bridge」插件，看到绿点即已连接'),
+      ),
+      React.createElement('div', { style: { fontSize: 12, opacity: 0.6, lineHeight: 1.6 } },
+        '导入后每次使用前运行插件；启用配置后重启 DSH Desktop。'),
       readMessage !== null
         ? React.createElement('div', { style: { fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '6px 10px' } }, readMessage)
         : null,
       React.createElement('div', { style: { display: 'flex', gap: 8 } },
         React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: applyRead },
-          busy === 'read' ? '写入中…' : '启用'),
+          busy === 'read' ? '配置中…' : '启用'),
         readCfg !== undefined && readCfg.configured
           ? React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: removeRead }, '停用')
           : null,

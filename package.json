@@ -63,7 +63,7 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-settings": "0.1.0-rc.6",
-    "figma-developer-mcp": "0.13.2",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "figma-ui-mcp": "2.5.26",
     "yaml": "2.9.0",
     "zod": "^4.4.3"

@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
   SIGHT_RPC,
@@ -62,7 +63,7 @@ const FIGMA_MCP_PLUGIN = '@deepseek-ai/dsh-mcp-client'
  * Resolve the entry script of a Figma MCP server. Both packages ship as
  * dependencies of dsh-sight and stay external in the build so the standalone
  * entry files exist on disk for the mcp-client child processes to spawn.
- * - `figma-developer-mcp`: REST design-to-code (token-based, read-only).
+ * - `figma-read-server`: localhost plugin bridge (read-only design-to-code).
  * - `figma-ui-mcp`: localhost plugin bridge (AI-driven design, read/write).
  */
 const figmaServerBin = (pkg: string, rel: readonly string[]): string => {
@@ -71,13 +72,13 @@ const figmaServerBin = (pkg: string, rel: readonly string[]): string => {
     const resolved = require.resolve(`${pkg}/package.json`)
     return join(dirname(resolved), ...rel)
   } catch {
-    return join(homedir(), 'AppData', 'Local', 'Temp', `figma-${pkg === 'figma-developer-mcp' ? 'mcp' : 'ui-mcp'}-test`, 'node_modules', pkg, ...rel)
+    return join(homedir(), 'AppData', 'Local', 'Temp', 'figma-ui-mcp-test', 'node_modules', pkg, ...rel)
   }
 }
 
-/** figma-developer-mcp entry (REST design-to-code server). */
-const FIGMA_READ_BIN = figmaServerBin('figma-developer-mcp', ['dist', 'bin.js'])
-/** figma-ui-mcp entry (localhost plugin-bridge server). */
+/** Read-only localhost plugin MCP server entry (design-to-code). */
+const FIGMA_READ_BIN = join(dirname(fileURLToPath(import.meta.url)), 'figma-read-server.js')
+/** Write-capable localhost plugin bridge server entry. */
 const FIGMA_WRITE_BIN = figmaServerBin('figma-ui-mcp', ['server', 'index.js'])
 
 /** Curated dictionary of popular multimodal models (regex against lowercase model ids). */
@@ -628,9 +629,9 @@ export function apply(ctx: Context): void {
     // DSH exposes a built-in `@deepseek-ai/dsh-mcp-client` that connects to any
     // stdio MCP server and mounts its tools for the model. The Figma desktop
     // MCP endpoint (Dev Mode) is enterprise-gated, so for personal accounts we
-    // run the community `figma-developer-mcp` package over stdio with a Figma
-    // Personal Access Token. The only wiring is a row in the profile's
-    // `cordis.patch.yml` - no MCP protocol code lives in dsh-sight.
+    // run a local read-only facade over the Figma Desktop plugin bridge. The
+    // only wiring is a row in the profile's `cordis.patch.yml`; the facade
+    // enforces read-only tool and operation allowlists.
 
     /** Active profile name: the desktop launcher pins `desktop`; fall back to scanning. */
     const activeProfile = (): string => {
@@ -672,12 +673,12 @@ export function apply(ctx: Context): void {
 
     /**
      * Find the `insert` entry carrying one Figma MCP row. Matches by the
-     * mcp-client plugin name AND the mode's serverName (`figma` for the REST
-     * read server, `figma-ui` for the plugin bridge) so unrelated mcp-client
+     * mcp-client plugin name AND the mode's serverName (`figma-read` for the
+     * read-only plugin server, `figma-ui` for the plugin bridge) so unrelated mcp-client
      * rows are never touched.
      */
     const findFigmaRow = (patch: unknown[], mode: 'read' | 'write'): { insertEntry: Record<string, unknown>; row: Record<string, unknown>; index: number } | null => {
-      const serverName = mode === 'read' ? 'figma' : 'figma-ui'
+      const serverNames = mode === 'read' ? new Set(['figma-read', 'figma']) : new Set(['figma-ui'])
       for (const entry of patch) {
         if (entry === null || typeof entry !== 'object') continue
         const e = entry as Record<string, unknown>
@@ -691,7 +692,7 @@ export function apply(ctx: Context): void {
           const config = r.config
           if (config === null || typeof config !== 'object') continue
           const c = config as Record<string, unknown>
-          if (c.serverName === serverName) return { insertEntry: e, row: r, index: i }
+          if (typeof c.serverName === 'string' && serverNames.has(c.serverName)) return { insertEntry: e, row: r, index: i }
         }
       }
       return null
@@ -744,7 +745,7 @@ export function apply(ctx: Context): void {
         const read = rowStatus(findFigmaRow(patch, 'read'))
         const write = rowStatus(findFigmaRow(patch, 'write'))
         return {
-          read: { ...read, manifestPath: null },
+          read: { ...read, manifestPath: manifest },
           write: { ...write, manifestPath: manifest },
           patchPath: file,
           profile: activeProfile(),
@@ -763,7 +764,7 @@ export function apply(ctx: Context): void {
 
     /**
      * Write (or update) one Figma MCP row.
-     * - read mode: token (and optional proxy) required, REST design-to-code.
+     * - read mode: local plugin bridge facade, no token or external network.
      * - write mode: bare stdio entry, talks to the Figma Desktop plugin over
      *   localhost - no token, no proxy.
      */
@@ -774,24 +775,14 @@ export function apply(ctx: Context): void {
       }
       let row: Record<string, unknown>
       if (mode === 'read') {
-        const token = typeof req.token === 'string' ? req.token.trim() : ''
-        if (token.length === 0) return { ok: false, patchPath: patchPath(), error: 'Figma token is required' }
-        const proxy = typeof req.proxy === 'string' && req.proxy.trim().length > 0 ? req.proxy.trim() : null
-        const env: Record<string, string> = { FIGMA_API_KEY: token }
-        if (proxy !== null) {
-          env.HTTPS_PROXY = proxy
-          env.HTTP_PROXY = proxy
-          env.FIGMA_PROXY = proxy
-        }
         row = {
-          id: 'figma-mcp',
+          id: 'figma-read-mcp',
           name: FIGMA_MCP_PLUGIN,
           config: {
             transport: 'stdio',
-            serverName: 'figma',
+            serverName: 'figma-read',
             command: 'node',
-            args: [FIGMA_READ_BIN, '--stdio'],
-            env,
+            args: [FIGMA_READ_BIN],
           },
         }
       } else {
@@ -808,11 +799,21 @@ export function apply(ctx: Context): void {
       }
       try {
         const patch = readPatch()
-        const found = findFigmaRow(patch, mode)
-        if (found !== null) {
+        let found = findFigmaRow(patch, mode)
+        if (mode === 'read') {
+          // Remove every legacy REST/read row, including duplicates, so an old
+          // token-bearing child process cannot survive the migration.
+          while (found !== null) {
+            const list = Array.isArray(found.insertEntry.insert) ? found.insertEntry.insert : [found.insertEntry.insert]
+            list.splice(found.index, 1)
+            found.insertEntry.insert = list
+            found = findFigmaRow(patch, mode)
+          }
+          patch.push({ insert: [row] })
+        } else if (found !== null) {
           const list = Array.isArray(found.insertEntry.insert) ? found.insertEntry.insert : [found.insertEntry.insert]
           list[found.index] = row
-          if (!Array.isArray(found.insertEntry.insert)) found.insertEntry.insert = list
+          found.insertEntry.insert = list
         } else {
           patch.push({ insert: [row] })
         }
@@ -827,11 +828,12 @@ export function apply(ctx: Context): void {
     const figmaMcpRemove = (mode: 'read' | 'write'): SightFigmaMcpWriteResult => {
       try {
         const patch = readPatch()
-        const found = findFigmaRow(patch, mode)
-        if (found !== null) {
+        let found = findFigmaRow(patch, mode)
+        while (found !== null) {
           const list = Array.isArray(found.insertEntry.insert) ? found.insertEntry.insert : [found.insertEntry.insert]
           list.splice(found.index, 1)
-          if (!Array.isArray(found.insertEntry.insert)) found.insertEntry.insert = list
+          found.insertEntry.insert = list
+          found = findFigmaRow(patch, mode)
         }
         writePatch(patch)
         return { ok: true, patchPath: patchPath(), error: null }

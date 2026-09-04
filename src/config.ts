@@ -124,7 +124,7 @@ export interface SightClearImagesResult {
  * `figma-ui-mcp` server over localhost — no token, no proxy, no Figma REST API.
  */
 export interface SightFigmaMcpStatusResult {
-  /** Design-to-code (REST, token-based) status. */
+  /** Design-to-code (local plugin bridge, read-only) status. */
   readonly read: SightFigmaModeStatus
   /** AI-driven design (plugin bridge) status. */
   readonly write: SightFigmaModeStatus
@@ -138,11 +138,10 @@ export interface SightFigmaMcpStatusResult {
 
 /** Request payload for {@link SIGHT_RPC.figmaMcpApply}. */
 export interface SightFigmaMcpApplyRequest {
-  /** Which capability to configure: 'read' (token-based design-to-code) or 'write' (plugin-bridge AI design). */
+  /** Which capability to configure: 'read' (plugin-based design-to-code) or 'write' (plugin-bridge AI design). */
   readonly mode: 'read' | 'write'
-  /** Figma Personal Access Token (read mode only, required). */
+  /** Legacy fields accepted for wire compatibility but ignored in read mode. */
   readonly token?: string
-  /** Optional proxy URL for restricted networks (read mode only). */
   readonly proxy?: string
 }
 
@@ -156,9 +155,9 @@ export interface SightFigmaMcpRemoveRequest {
 export interface SightFigmaModeStatus {
   /** Whether the capability's row exists in `cordis.patch.yml`. */
   readonly configured: boolean
-  /** Whether a Figma token is present in the row (read mode only). */
+  /** Legacy migration signal: whether an old REST row still carries a token. */
   readonly hasToken: boolean
-  /** Absolute path of the Figma plugin manifest (write mode only, to import). */
+  /** Absolute path of the shared Figma plugin manifest, when available. */
   readonly manifestPath: string | null
 }
 

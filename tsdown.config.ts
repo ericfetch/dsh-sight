@@ -32,7 +32,20 @@ const VENDORED_LIBRARY = /^@deepseek-ai\/(cosmokit|schemastery)(\/|$)/
  * mcp-client bridge, so each needs its standalone entry file on disk (bundling
  * would inline them into lib/index.js and leave nothing for the child to run).
  */
-const NODE_EXTERNALS: readonly string[] = ['figma-developer-mcp', 'figma-ui-mcp']
+const NODE_EXTERNALS: readonly string[] = ['figma-ui-mcp', '@modelcontextprotocol/sdk']
+
+const readServer: UserConfig = {
+  name: `${PACKAGE_ID}/figma-read-server`,
+  entry: { 'figma-read-server': 'src/figma-read-server.ts' },
+  outDir: 'lib',
+  format: ['esm'],
+  platform: 'node',
+  target: 'es2024',
+  fixedExtension: false,
+  dts: false,
+  clean: false,
+  external: [...NODE_EXTERNALS],
+}
 
 const nodeLibrary: UserConfig = {
   name: PACKAGE_ID,
@@ -83,4 +96,4 @@ const clientBundle: UserConfig = {
   },
 }
 
-export default defineConfig([nodeLibrary, clientBundle])
+export default defineConfig([nodeLibrary, readServer, clientBundle])
