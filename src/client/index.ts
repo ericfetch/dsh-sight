@@ -242,6 +242,7 @@ function FigmaMcpPage(): ReactElement {
   const [busy, setBusy] = React.useState('')
   const [readMessage, setReadMessage] = React.useState<string | null>(null)
   const [writeMessage, setWriteMessage] = React.useState<string | null>(null)
+  const [copied, setCopied] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
   const load = React.useCallback(() => {
@@ -320,32 +321,61 @@ function FigmaMcpPage(): ReactElement {
 
   const readCfg = status?.read
   const writeCfg = status?.write
+  const manifestPath = readCfg?.manifestPath ?? writeCfg?.manifestPath ?? null
+
+  const copyManifestPath = (): void => {
+    if (!manifestPath) return
+    navigator.clipboard?.writeText(manifestPath).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }).catch(() => {})
+  }
+
+  // ── 公共卡片: Figma 桌面端插件安装（一次性） ─────────────────────
+  children.push(React.createElement('div', { style: { ...GROUP, background: 'rgba(128,128,128,0.04)' } },
+    React.createElement('div', { style: GROUP_HEAD },
+      React.createElement('span', null, 'Figma 桌面端插件安装'),
+      React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } }, '一次性导入 · 两项功能通用'),
+    ),
+    React.createElement('div', { style: { padding: '12px', display: 'flex', flexDirection: 'column', gap: 10 } },
+      React.createElement('div', { style: { fontSize: 12, opacity: 0.8, lineHeight: 1.6 } },
+        '「设计稿 → 代码」与「AI 主动设计」在 Figma 端均使用同一个本地桥接插件。只需导入一次，使用时在 Figma 中保持插件运行即可。'),
+      React.createElement('div', { style: { fontSize: 12, opacity: 0.9, lineHeight: 1.7, background: 'rgba(128,128,128,0.08)', borderRadius: 6, padding: '10px 12px', border: '1px solid rgba(128,128,128,0.18)' } },
+        React.createElement('div', null, '① 打开 ', React.createElement('b', null, 'Figma 桌面客户端'), '（网页版无法连接本地 localhost）'),
+        React.createElement('div', null, '② 顶部菜单：Plugins → Development → Import plugin from manifest...'),
+        React.createElement('div', null, '③ 导入下方插件清单文件：'),
+        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, background: 'rgba(0,0,0,0.15)', borderRadius: 4, padding: '6px 8px' } },
+          React.createElement('div', { style: { fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all', flex: 1, opacity: 0.85 } },
+            manifestPath ?? '（正在检测插件路径…）'),
+          manifestPath !== null
+            ? React.createElement('button', {
+                type: 'button',
+                style: { ...BUTTON, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap', minHeight: 24 },
+                onClick: copyManifestPath,
+              }, copied ? '已复制 ✓' : '复制路径')
+            : null,
+        ),
+        React.createElement('div', { style: { marginTop: 6 } }, '④ 在 Figma 中运行「', React.createElement('b', null, 'Figma UI MCP Bridge'), '」插件，看到绿点即已成功连接。'),
+      ),
+      React.createElement('div', { style: { fontSize: 11, opacity: 0.6, lineHeight: 1.5 } },
+        '提示：在下方修改 MCP 启停配置后，需重启 DSH Desktop 方可生效。'),
+    ),
+  ))
 
   // ── 区块 1: 设计稿 → 代码（本地只读插件） ─────────────────────────
-  children.push(React.createElement('div', { style: GROUP },
+  children.push(React.createElement('div', { style: { ...GROUP, marginTop: 10 } },
     React.createElement('div', { style: GROUP_HEAD },
       React.createElement('span', null, '① 设计稿 → 代码'),
-      React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } }, '只读插件'),
+      React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } }, '安全只读'),
       readCfg === undefined
         ? null
         : readCfg.configured
           ? React.createElement(Chip, { tone: 'on' }, '已启用')
           : React.createElement(Chip, { tone: 'off' }, '未启用'),
     ),
-    React.createElement('div', { style: { padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 } },
-      React.createElement('div', { style: { fontSize: 12, opacity: 0.75, lineHeight: 1.6 } },
-        '让模型读取 Figma 设计稿并生成代码。数据通过 Figma Desktop 本地插件桥接，不调用 Figma REST API，不需要 Token 或代理。只能读取画布，不能创建、修改、删除节点。'),
-      React.createElement('div', { style: { fontSize: 12, opacity: 0.85, lineHeight: 1.7, background: 'rgba(128,128,128,0.08)', borderRadius: 6, padding: '8px 10px', border: '1px solid rgba(128,128,128,0.2)' } },
-        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '首次安装（一次性）'),
-        React.createElement('div', null, '① 打开 Figma Desktop（网页版无法连接 localhost）'),
-        React.createElement('div', null, '② Plugins → Development → Import plugin from manifest...'),
-        React.createElement('div', null, '③ 选择下面的 manifest.json 路径'),
-        React.createElement('div', { style: { fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all', marginTop: 2, opacity: 0.8 } },
-          readCfg?.manifestPath ?? '（路径加载中…）'),
-        React.createElement('div', { style: { marginTop: 4 } }, '④ 运行「Figma UI MCP Bridge」插件，看到绿点即已连接'),
-      ),
-      React.createElement('div', { style: { fontSize: 12, opacity: 0.6, lineHeight: 1.6 } },
-        '导入后每次使用前运行插件；启用配置后重启 DSH Desktop。'),
+    React.createElement('div', { style: { padding: '12px', display: 'flex', flexDirection: 'column', gap: 10 } },
+      React.createElement('div', { style: { fontSize: 12, opacity: 0.8, lineHeight: 1.6 } },
+        '让模型读取 Figma 画布结构并直接生成前端代码（React/Vue/CSS 等）。严格只读，只能提取图层、样式、Token 与截图，绝对不会修改或删除画布节点。'),
       readMessage !== null
         ? React.createElement('div', { style: { fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '6px 10px' } }, readMessage)
         : null,
@@ -360,30 +390,19 @@ function FigmaMcpPage(): ReactElement {
   ))
 
   // ── 区块 2: AI 主动设计（需要 Figma 插件） ──────────────────────────
-  children.push(React.createElement('div', { style: { ...GROUP, marginTop: 8 } },
+  children.push(React.createElement('div', { style: { ...GROUP, marginTop: 10 } },
     React.createElement('div', { style: GROUP_HEAD },
       React.createElement('span', null, '② AI 主动设计'),
-      React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } }, '需装 Figma 插件'),
+      React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } }, '完整读写'),
       writeCfg === undefined
         ? null
         : writeCfg.configured
           ? React.createElement(Chip, { tone: 'on' }, '已启用')
           : React.createElement(Chip, { tone: 'off' }, '未启用'),
     ),
-    React.createElement('div', { style: { padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 } },
-      React.createElement('div', { style: { fontSize: 12, opacity: 0.75, lineHeight: 1.6 } },
-        '让模型直接在 Figma 画布上绘制/修改设计。'),
-      React.createElement('div', { style: { fontSize: 12, opacity: 0.85, lineHeight: 1.7, background: 'rgba(128,128,128,0.08)', borderRadius: 6, padding: '8px 10px', border: '1px solid rgba(128,128,128,0.2)' } },
-        React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '首次安装（一次性）'),
-        React.createElement('div', null, '① 打开 Figma 桌面版（须桌面版，网页版无法连 localhost）'),
-        React.createElement('div', null, '② Plugins → Development → Import plugin from manifest...'),
-        React.createElement('div', null, '③ 选择下面的 manifest.json 文件'),
-        React.createElement('div', { style: { fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all', marginTop: 2, opacity: 0.8 } },
-          writeCfg?.manifestPath ?? '（路径加载中…）'),
-        React.createElement('div', { style: { marginTop: 4 } }, '④ 运行「Figma UI MCP Bridge」插件，看到绿点即已连接'),
-      ),
-      React.createElement('div', { style: { fontSize: 12, opacity: 0.6, lineHeight: 1.6 } },
-        '之后每次只需在 Figma 里运行「Figma UI MCP Bridge」插件即可，无需重复导入。'),
+    React.createElement('div', { style: { padding: '12px', display: 'flex', flexDirection: 'column', gap: 10 } },
+      React.createElement('div', { style: { fontSize: 12, opacity: 0.8, lineHeight: 1.6 } },
+        '让模型直接在 Figma 画布上自动绘制、批量生成与修改设计。拥有完整读写权限，支持执行画布构建与排版指令。'),
       writeMessage !== null
         ? React.createElement('div', { style: { fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '6px 10px' } }, writeMessage)
         : null,
@@ -395,7 +414,7 @@ function FigmaMcpPage(): ReactElement {
           : null,
       ),
       status !== null
-        ? React.createElement('div', { style: { fontSize: 11, opacity: 0.6 } }, `配置文件: ${status.patchPath}`)
+        ? React.createElement('div', { style: { fontSize: 11, opacity: 0.5, marginTop: 4 } }, `配置文件: ${status.patchPath}`)
         : null,
     ),
   ))
