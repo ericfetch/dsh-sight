@@ -49,7 +49,7 @@ DeepSeek Harness（DSH）插件：**多模态图片直传** + **会话图片清�
 - 数据来源：Figma Desktop 插件 localhost bridge，提供节点树、选区、CSS、样式、变量、组件、截图与仓库匹配等读取工具；
 - **底层引擎可随时切换**（设置页「Figma MCP → ① 设计稿 → 代码 → 底层引擎」，保存后即时生效、无需重启 DSH）：
   - `figma-ui-mcp` 原引擎（默认，行为与旧版一致）：Figma 插件「Figma UI MCP Bridge」，模型可见 `figma_status` / `figma_read` / `figma_rules`，保留 get_css / export_svg / scan_design 等读取操作；
-  - `figwright` 接地引擎：Figma 插件「Figwright」（从 [GitHub Releases](https://github.com/awdr74100/figwright/releases/latest) 下载 zip 导入一次），模型可见约 27 个只读工具（`get_design_context` / `component_map` / `token_map` / `icon_map` / `design_diff` / `get_screenshot` 等）。可选填「目标代码目录」，服务器会只读扫描该本机工程，把 Figma 组件/Token/图标匹配到工程已有实现，生成能直接落地、复用既有组件的代码——目录仅本机读取，**不会上传任何代码**；
+  - `figwright` 接地引擎：Figma 插件「Figwright」。在设置页插件安装卡点「一键下载最新版」即可自动下载并解压最新 release（保存在本机配置文件旁，只保留最新一份；网络失败时可点「手动下载（Releases）」兜底），再在 Figma 中 Import plugin from manifest... 选择解压出的 manifest.json 并运行一次。模型可见约 27 个只读工具（`get_design_context` / `component_map` / `token_map` / `icon_map` / `design_diff` / `get_screenshot` 等）。可选填「目标代码目录」，服务器会只读扫描该本机工程，把 Figma 组件/Token/图标匹配到工程已有实现，生成能直接落地、复用既有组件的代码——目录仅本机读取，**不会上传任何代码**；
 - 使用：启用后在 Figma Desktop 运行**当前引擎对应的插件**（两者可同时安装，互不冲突），打开目标文件并选中画板/节点，再对模型说"实现成 React/CSS"即可；
 - 安全边界：此入口无论哪个引擎都只注册只读工具，不能创建、修改、删除或移动画布节点。
 

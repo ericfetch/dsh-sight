@@ -26,6 +26,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import * as figwrightInstall from './figma-plugin-install.ts'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
   SIGHT_RPC,
@@ -39,6 +40,8 @@ import {
   type SightFigmaMcpRemoveRequest,
   type SightFigmaMcpStatusResult,
   type SightFigmaMcpWriteResult,
+  type SightFigwrightPluginInfo,
+  type SightFigwrightPluginUpdateResult,
   type SightModelEntry,
   type SightProviderEntry,
   type SightReadBackend,
@@ -812,6 +815,12 @@ export function apply(ctx: Context): void {
       writeFileSync(file, stringifyYaml(patch), 'utf8')
     }
 
+    /** Where the latest Figwright plugin copy is kept (single, overwritten). */
+    const figwrightPluginDir = (): string => figwrightInstall.figwrightPluginDir(dirname(patchPath()))
+    const figwrightPluginState = (): SightFigwrightPluginInfo => figwrightInstall.readFigwrightPluginAt(figwrightPluginDir())
+    const figwrightPluginUpdate = (): Promise<SightFigwrightPluginUpdateResult> =>
+      figwrightInstall.installLatestFigwrightPlugin(figwrightPluginDir())
+
     /** Status: both capabilities' presence in the patch. */
     const figmaMcpStatus = (): SightFigmaMcpStatusResult => {
       const file = patchPath()
@@ -833,12 +842,14 @@ export function apply(ctx: Context): void {
             backend: readEngine.backend,
             repoDir: readEngine.repoDir,
             manifestPath: readEngine.backend === 'figma-ui-mcp' ? manifest : null,
+            figwrightPlugin: figwrightPluginState(),
           },
           write: {
             ...write,
             backend: 'figma-ui-mcp',
             repoDir: null,
             manifestPath: manifest,
+            figwrightPlugin: { installedTag: null, manifestPath: null },
           },
           patchPath: file,
           profile: activeProfile(),
@@ -846,8 +857,8 @@ export function apply(ctx: Context): void {
         }
       } catch (error) {
         return {
-          read: { configured: false, hasToken: false, manifestPath: null, backend: 'figma-ui-mcp', repoDir: null },
-          write: { configured: false, hasToken: false, manifestPath: null, backend: 'figma-ui-mcp', repoDir: null },
+          read: { configured: false, hasToken: false, manifestPath: null, backend: 'figma-ui-mcp', repoDir: null, figwrightPlugin: { installedTag: null, manifestPath: null } },
+          write: { configured: false, hasToken: false, manifestPath: null, backend: 'figma-ui-mcp', repoDir: null, figwrightPlugin: { installedTag: null, manifestPath: null } },
           patchPath: file,
           profile: activeProfile(),
           error: error instanceof Error ? error.message : String(error),
@@ -1006,6 +1017,8 @@ export function apply(ctx: Context): void {
             const p = payload as { path?: unknown }
             return ok(listRepoDirs(typeof p.path === 'string' ? p.path : undefined))
           }
+          case SIGHT_RPC.figwrightPluginUpdate:
+            return ok(await figwrightPluginUpdate())
           default:
             return fail(`unknown dsh-sight endpoint "${String(endpoint)}"`)
         }

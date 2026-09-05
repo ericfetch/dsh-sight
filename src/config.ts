@@ -20,6 +20,7 @@ export const SIGHT_RPC = {
   figmaMcpApply: 'figmaMcpApply',
   figmaMcpRemove: 'figmaMcpRemove',
   repoDirList: 'repoDirList',
+  figwrightPluginUpdate: 'figwrightPluginUpdate',
 } as const
 
 /** One dictionary entry rendered as a chip on the settings page. */
@@ -171,6 +172,8 @@ export interface SightFigmaModeStatus {
   readonly backend: SightReadBackend
   /** Local repo directory the figwright engine may scan (read-only, never uploaded). */
   readonly repoDir: string | null
+  /** Locally extracted Figwright plugin (release zip, kept at the latest copy only). */
+  readonly figwrightPlugin: SightFigwrightPluginInfo
 }
 
 /** Result of {@link SIGHT_RPC.figmaMcpApply} / {@link SIGHT_RPC.figmaMcpRemove}. */
@@ -193,5 +196,23 @@ export interface SightDirListing {
   readonly parent: string | null
   /** Subdirectories as absolute paths (dot-directories omitted, sorted). */
   readonly dirs: readonly string[]
+  readonly error: string | null
+}
+
+/** Locally extracted Figwright plugin (release zip, kept at the latest copy only). */
+export interface SightFigwrightPluginInfo {
+  /** Release tag of the installed copy, e.g. "v0.5.0"; null when not installed. */
+  readonly installedTag: string | null
+  /** Absolute path of the extracted manifest.json; null when not installed. */
+  readonly manifestPath: string | null
+}
+
+/** Result of {@link SIGHT_RPC.figwrightPluginUpdate}. */
+export interface SightFigwrightPluginUpdateResult {
+  readonly ok: boolean
+  /** True when the already-installed copy already matches the latest GitHub release. */
+  readonly upToDate: boolean
+  readonly tag: string | null
+  readonly manifestPath: string | null
   readonly error: string | null
 }

@@ -22,6 +22,7 @@ import {
   type SightFigmaMcpRemoveRequest,
   type SightFigmaMcpStatusResult,
   type SightFigmaMcpWriteResult,
+  type SightFigwrightPluginUpdateResult,
   type SightModelEntry,
   type SightReasoningChange,
   type SightReasoningDictionaryEntry,
@@ -333,6 +334,7 @@ function FigmaMcpPage(): ReactElement {
   const [backend, setBackend] = React.useState<SightReadBackend>('figma-ui-mcp')
   const [repoDir, setRepoDir] = React.useState('')
   const [pickerOpen, setPickerOpen] = React.useState(false)
+  const [fwMessage, setFwMessage] = React.useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
 
   const load = React.useCallback(() => {
     rpc<SightFigmaMcpStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpStatus, {})
@@ -435,12 +437,35 @@ function FigmaMcpPage(): ReactElement {
   // installed from the project's GitHub release zip (no local manifest path).
   const manifestPath = writeCfg?.manifestPath ?? readCfg?.manifestPath ?? null
 
-  const copyManifestPath = (): void => {
-    if (!manifestPath) return
-    navigator.clipboard?.writeText(manifestPath).then(() => {
+  const copyPath = (path: string): void => {
+    navigator.clipboard?.writeText(path).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }).catch(() => {})
+  }
+
+  const copyManifestPath = (): void => {
+    if (manifestPath) copyPath(manifestPath)
+  }
+
+  /** One-click: download the latest Figwright plugin zip on the host and extract it next to the profile config. */
+  const updateFigwrightPlugin = (): void => {
+    if (busy !== '') return
+    setBusy('plugin')
+    setFwMessage(null); setError(null)
+    rpc<SightFigwrightPluginUpdateResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figwrightPluginUpdate, {})
+      .then(value => {
+        if (!value.ok) {
+          setFwMessage({ tone: 'err', text: `下载失败: ${value.error ?? 'unknown'}` })
+        } else if (value.upToDate) {
+          setFwMessage({ tone: 'ok', text: `已是最新版本 ${value.tag ?? ''}，无需重复下载。` })
+        } else {
+          setFwMessage({ tone: 'ok', text: `下载完成 ${value.tag ?? ''}：manifest 已解压就绪，在 Figma 中导入一次即可。` })
+        }
+        load()
+      })
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
+      .finally(() => setBusy(''))
   }
 
   // ── 公共卡片: Figma 桌面端插件安装（按引擎选择，可同时安装） ──────
@@ -470,17 +495,52 @@ function FigmaMcpPage(): ReactElement {
         ),
         React.createElement('div', { style: { marginTop: 6 } }, '④ 在 Figma 中运行「', React.createElement('b', null, 'Figma UI MCP Bridge'), '」插件，看到绿点即已成功连接。'),
         React.createElement('div', { style: { fontWeight: 600, marginTop: 12 } }, '插件 B — Figwright（用于 ① 接地引擎，仓库级组件/Token 匹配）'),
-        React.createElement('div', { style: { marginTop: 4 } }, '① 下载插件 zip：'),
-        React.createElement('div', { style: { marginTop: 4 } },
-          React.createElement('a', {
-            href: 'https://github.com/awdr74100/figwright/releases/latest',
-            target: '_blank',
-            rel: 'noreferrer',
-            style: { ...BUTTON, display: 'inline-block', textDecoration: 'none' },
-          }, '打开 Figwright Releases 下载页'),
-        ),
-        React.createElement('div', { style: { marginTop: 4 } }, '② 解压 zip → Plugins → Development → Import plugin from manifest... 选择解压目录里的 manifest.json'),
-        React.createElement('div', { style: { marginTop: 4 } }, '③ 在 Figma 中运行「', React.createElement('b', null, 'Figwright'), '」插件，面板显示 Connected 即已成功连接。'),
+        (() => {
+          const fwPlugin = readCfg?.figwrightPlugin
+          const fwManifest = fwPlugin?.manifestPath ?? null
+          const rows: ReactNode[] = []
+          if (fwManifest !== null) {
+            rows.push(React.createElement('div', { key: 'ready', style: { marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+              React.createElement(Chip, { tone: 'on' }, fwPlugin?.installedTag !== null && fwPlugin?.installedTag !== undefined ? `已就绪 ${fwPlugin.installedTag}` : '已就绪'),
+              React.createElement('div', { style: { fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all', flex: 1, minWidth: 0, opacity: 0.85 } }, fwManifest),
+              React.createElement('button', {
+                type: 'button',
+                style: { ...BUTTON, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap', minHeight: 24 },
+                onClick: () => copyPath(fwManifest),
+              }, copied ? '已复制 ✓' : '复制路径'),
+            ))
+          } else {
+            rows.push(React.createElement('div', { key: 'hint', style: { marginTop: 6, fontSize: 12, opacity: 0.85 } },
+              '① 一键下载最新版插件 zip 并自动解压（保存在本机配置文件旁，仅保留最新一份）：'))
+          }
+          rows.push(React.createElement('div', { key: 'actions', style: { marginTop: 6, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+            React.createElement('button', {
+              type: 'button',
+              style: { ...BUTTON, whiteSpace: 'nowrap' },
+              disabled: busy !== '',
+              onClick: updateFigwrightPlugin,
+            }, busy === 'plugin' ? '下载中…' : (fwManifest !== null ? '检查并更新' : '一键下载最新版')),
+            React.createElement('a', {
+              href: 'https://github.com/awdr74100/figwright/releases/latest',
+              target: '_blank',
+              rel: 'noreferrer',
+              style: { ...BUTTON, display: 'inline-block', textDecoration: 'none', whiteSpace: 'nowrap' },
+            }, '手动下载（Releases）'),
+          ))
+          if (fwMessage !== null) {
+            rows.push(React.createElement('div', { key: 'msg', style: { marginTop: 6, fontSize: 12, color: fwMessage.tone === 'ok' ? '#4ade80' : '#f87171' } }, fwMessage.text))
+          }
+          const importStep = fwManifest !== null
+            ? '选择上方路径里的 manifest.json'
+            : '选择解压目录里的 manifest.json'
+          rows.push(React.createElement('div', { key: 'steps', style: { marginTop: 6 } },
+            React.createElement('div', null, `② 顶部菜单：Plugins → Development → Import plugin from manifest... ${importStep}`),
+            React.createElement('div', { style: { marginTop: 4 } }, '③ 在 Figma 中运行「', React.createElement('b', null, 'Figwright'), '」插件，面板显示 Connected 即已成功连接。'),
+          ))
+          rows.push(React.createElement('div', { key: 'note', style: { marginTop: 4, fontSize: 11, opacity: 0.6 } },
+            'Figma 导入时会复制插件到自己的目录，此副本删除也不影响运行；保留一份最新版只是为了随时可重新导入/升级（上游发新版时再点一次「检查并更新」）。'))
+          return rows
+        })(),
       ),
       React.createElement('div', { style: { fontSize: 11, opacity: 0.6, lineHeight: 1.5 } },
         '提示：两个插件都只连接本机 127.0.0.1 的桥接服务，不上传任何数据；修改启停或引擎后，按下方提示重启/刷新 DSH。'),
