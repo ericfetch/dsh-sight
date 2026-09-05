@@ -17,6 +17,7 @@ import {
   SIGHT_RPC_CHANNEL,
   type SightApplyReasoningResult,
   type SightClearImagesResult,
+  type SightDirListing,
   type SightFigmaMcpApplyRequest,
   type SightFigmaMcpRemoveRequest,
   type SightFigmaMcpStatusResult,
@@ -75,6 +76,89 @@ function formatErrorMessage(e: unknown): string {
 function Chip(props: { tone: 'on' | 'off' | 'warn' | 'info'; children?: ReactNode }): ReactElement {
   const style = props.tone === 'on' ? CHIP_ON : props.tone === 'off' ? CHIP_OFF : props.tone === 'warn' ? CHIP_WARN : CHIP_INFO
   return React.createElement('span', { style }, props.children)
+}
+
+/** Inline host-backed directory browser for picking the figwright repo root. */
+function RepoDirPicker(props: { value: string; onPick: (path: string) => void; onClose: () => void }): ReactElement {
+  const [path, setPath] = React.useState<string | null>(null)
+  const [parent, setParent] = React.useState<string | null>(null)
+  const [dirs, setDirs] = React.useState<string[]>([])
+  const [busy, setBusy] = React.useState(false)
+  const [pickError, setPickError] = React.useState<string | null>(null)
+  const [jump, setJump] = React.useState('')
+
+  const browse = React.useCallback((target: string | undefined): void => {
+    setBusy(true)
+    setPickError(null)
+    rpc<SightDirListing>(
+      clientCtx.get('connection') as unknown as ConnectionHandle,
+      SIGHT_RPC.repoDirList,
+      target === undefined || target.trim().length === 0 ? {} : { path: target.trim() },
+    )
+      .then(listing => {
+        setPath(listing.path)
+        setParent(listing.parent)
+        setDirs([...listing.dirs])
+        setPickError(listing.error)
+      })
+      .catch((e: unknown) => setPickError(formatErrorMessage(e)))
+      .finally(() => setBusy(false))
+  }, [])
+
+  // Start where the field currently points, or at the home directory.
+  React.useEffect(() => {
+    browse(props.value)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const basename = (dir: string): string => dir.split(/[\\/]/).filter(part => part.length > 0).pop() ?? dir
+  const dirRows = dirs.length === 0
+    ? [React.createElement('div', { key: 'empty', style: { fontSize: 12, opacity: 0.6, padding: '6px 0' } }, '（没有子目录）')]
+    : dirs.map(dir => React.createElement('div', {
+        key: dir,
+        title: dir,
+        onClick: () => { if (!busy) browse(dir) },
+        style: {
+          display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+          background: dir === props.value ? 'rgba(59,130,246,0.14)' : 'transparent',
+        },
+      },
+        React.createElement('span', { style: { opacity: 0.7 } }, '📁'),
+        React.createElement('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, basename(dir)),
+        dir === props.value ? React.createElement('span', { style: { color: '#60a5fa', fontSize: 11 } }, '当前') : null,
+      ))
+
+  const inputStyle: CSSProperties = {
+    flex: 1, minWidth: 0, border: '1px solid rgba(128,128,128,0.35)', background: 'rgba(0,0,0,0.18)',
+    color: 'inherit', borderRadius: 4, padding: '5px 8px', fontSize: 12, fontFamily: 'monospace',
+  }
+  return React.createElement('div', {
+    style: { border: '1px solid rgba(59,130,246,0.35)', borderRadius: 6, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6, background: 'rgba(59,130,246,0.05)' },
+  },
+    React.createElement('div', { style: { fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 } },
+      React.createElement('span', { style: { flex: 1 } }, '选择项目根目录'),
+      parent !== null
+        ? React.createElement('button', { type: 'button', style: { ...BUTTON, padding: '1px 8px', fontSize: 11 }, disabled: busy, onClick: () => browse(parent) }, '⬆ 上一级')
+        : null,
+    ),
+    React.createElement('div', { style: { fontSize: 11, opacity: 0.75, fontFamily: 'monospace', wordBreak: 'break-all', lineHeight: 1.5 } }, path ?? '加载中…'),
+    React.createElement('div', { style: { display: 'flex', gap: 6 } },
+      React.createElement('input', {
+        type: 'text', value: jump, spellCheck: false, placeholder: '或直接输入绝对路径后回车', style: inputStyle,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => setJump(e.target.value),
+        onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && !busy) browse(jump.trim()) },
+      }),
+      React.createElement('button', { type: 'button', style: BUTTON, disabled: busy || jump.trim().length === 0, onClick: () => browse(jump.trim()) }, '前往'),
+    ),
+    React.createElement('div', { style: { maxHeight: 200, overflowY: 'auto', border: '1px solid rgba(128,128,128,0.15)', borderRadius: 4, padding: '4px', display: 'flex', flexDirection: 'column', gap: 1 } }, ...dirRows),
+    pickError !== null
+      ? React.createElement('div', { style: { fontSize: 11, color: '#f87171' } }, pickError)
+      : null,
+    React.createElement('div', { style: { display: 'flex', gap: 6, justifyContent: 'flex-end' } },
+      React.createElement('button', { type: 'button', style: BUTTON, disabled: busy || path === null, onClick: () => { if (path !== null) props.onPick(path) } },
+        busy ? '读取中…' : `选择此目录${path !== null ? `（${basename(path)}）` : ''}`),
+      React.createElement('button', { type: 'button', style: BUTTON, disabled: busy, onClick: props.onClose }, '取消'),
+    ),
+  )
 }
 
 function ModelRow(props: { model: SightModelEntry; provider: string; busy: string; onToggle: (p: string, m: string, v: boolean) => void }): ReactElement {
@@ -248,6 +332,7 @@ function FigmaMcpPage(): ReactElement {
   // Engine controls for the read-only design-to-code facade.
   const [backend, setBackend] = React.useState<SightReadBackend>('figma-ui-mcp')
   const [repoDir, setRepoDir] = React.useState('')
+  const [pickerOpen, setPickerOpen] = React.useState(false)
 
   const load = React.useCallback(() => {
     rpc<SightFigmaMcpStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpStatus, {})
@@ -444,17 +529,30 @@ function FigmaMcpPage(): ReactElement {
         }),
       ),
       backend === 'figwright'
-        ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+        ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
             React.createElement('div', { style: { fontSize: 12, opacity: 0.8 } },
               '目标代码目录（可选）— 仅本机读取，用于把 Figma 组件/Token/图标匹配到你工程中的实现，不上传任何代码：'),
-            React.createElement('input', {
-              type: 'text',
-              value: repoDir,
-              spellCheck: false,
-              placeholder: '/Users/you/my-project（绝对路径；留空则只读取设计、不做仓库匹配）',
-              onChange: (e: React.ChangeEvent<HTMLInputElement>) => setRepoDir(e.target.value),
-              style: { border: '1px solid rgba(128,128,128,0.35)', background: 'rgba(0,0,0,0.18)', color: 'inherit', borderRadius: 4, padding: '5px 8px', fontSize: 12, fontFamily: 'monospace' },
-            }),
+            React.createElement('div', { style: { display: 'flex', gap: 6, alignItems: 'center' } },
+              React.createElement('input', {
+                type: 'text',
+                value: repoDir,
+                spellCheck: false,
+                placeholder: '/Users/you/my-project（可手输，或点「浏览…」选择项目根目录）',
+                onChange: (e: React.ChangeEvent<HTMLInputElement>) => setRepoDir(e.target.value),
+                style: { flex: 1, minWidth: 0, border: '1px solid rgba(128,128,128,0.35)', background: 'rgba(0,0,0,0.18)', color: 'inherit', borderRadius: 4, padding: '5px 8px', fontSize: 12, fontFamily: 'monospace' },
+              }),
+              React.createElement('button', { type: 'button', style: { ...BUTTON, whiteSpace: 'nowrap' }, disabled: busy !== '', onClick: () => setPickerOpen(true) }, '浏览…'),
+              repoDir !== ''
+                ? React.createElement('button', { type: 'button', style: { ...BUTTON, whiteSpace: 'nowrap' }, disabled: busy !== '', onClick: () => setRepoDir('') }, '清除')
+                : null,
+            ),
+            pickerOpen
+              ? React.createElement(RepoDirPicker, {
+                  value: repoDir,
+                  onPick: (picked: string) => { setRepoDir(picked); setPickerOpen(false) },
+                  onClose: () => setPickerOpen(false),
+                })
+              : null,
             React.createElement('div', { style: { fontSize: 11, opacity: 0.6 } },
               '切换引擎后，模型可见的工具列表会立即刷新（当前对话即可使用新工具）；若未刷新，重启 DSH Desktop 即生效。'),
           )

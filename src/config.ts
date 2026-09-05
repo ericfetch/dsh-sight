@@ -19,6 +19,7 @@ export const SIGHT_RPC = {
   figmaMcpStatus: 'figmaMcpStatus',
   figmaMcpApply: 'figmaMcpApply',
   figmaMcpRemove: 'figmaMcpRemove',
+  repoDirList: 'repoDirList',
 } as const
 
 /** One dictionary entry rendered as a chip on the settings page. */
@@ -176,5 +177,21 @@ export interface SightFigmaModeStatus {
 export interface SightFigmaMcpWriteResult {
   readonly ok: boolean
   readonly patchPath: string
+  readonly error: string | null
+}
+
+/** Request payload for {@link SIGHT_RPC.repoDirList} (omit `path` to start at the home directory). */
+export interface SightRepoDirListRequest {
+  readonly path?: string
+}
+
+/** One host-side directory listing for the repoDir picker (absolute paths). */
+export interface SightDirListing {
+  /** Directory that was listed. */
+  readonly path: string
+  /** Parent directory, or null when already at the filesystem root. */
+  readonly parent: string | null
+  /** Subdirectories as absolute paths (dot-directories omitted, sorted). */
+  readonly dirs: readonly string[]
   readonly error: string | null
 }

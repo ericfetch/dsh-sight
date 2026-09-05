@@ -34,6 +34,7 @@ import {
   type SightApplyReasoningResult,
   type SightClearFailure,
   type SightClearImagesResult,
+  type SightDirListing,
   type SightFigmaMcpApplyRequest,
   type SightFigmaMcpRemoveRequest,
   type SightFigmaMcpStatusResult,
@@ -778,6 +779,31 @@ export function apply(ctx: Context): void {
       return null
     }
 
+    /**
+     * List a directory's subdirectories for the settings-page repoDir picker.
+     * Browsing stays on the host (the browser cannot reveal absolute paths),
+     * travels only over the loopback channel, and never leaves the machine.
+     * An omitted/invalid request path falls back to the home directory.
+     */
+    const listRepoDirs = (requestPath: string | undefined): SightDirListing => {
+      const path = typeof requestPath === 'string' && requestPath.length > 0 && isAbsolute(requestPath)
+        ? requestPath
+        : homedir()
+      try {
+        const entries = readdirSync(path, { withFileTypes: true })
+        const dirs = entries
+          .filter(entry => entry.isDirectory() || entry.isSymbolicLink())
+          .map(entry => entry.name)
+          .filter(name => !name.startsWith('.'))
+          .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+          .map(name => join(path, name))
+        const parent = dirname(path) === path ? null : dirname(path)
+        return { path, parent, dirs, error: null }
+      } catch (error) {
+        return { path, parent: null, dirs: [], error: error instanceof Error ? error.message : String(error) }
+      }
+    }
+
     /** Serialize the patch array back to the file (UTF-8, no BOM). */
     const writePatch = (patch: unknown[]): void => {
       const file = patchPath()
@@ -975,6 +1001,10 @@ export function apply(ctx: Context): void {
             const p = payload as Partial<SightFigmaMcpRemoveRequest>
             if (p.mode !== 'read' && p.mode !== 'write') return fail('figmaMcpRemove requires { mode }')
             return ok(figmaMcpRemove(p.mode))
+          }
+          case SIGHT_RPC.repoDirList: {
+            const p = payload as { path?: unknown }
+            return ok(listRepoDirs(typeof p.path === 'string' ? p.path : undefined))
           }
           default:
             return fail(`unknown dsh-sight endpoint "${String(endpoint)}"`)
