@@ -137,6 +137,85 @@ dsh plugin --profile desktop update --latest @eric.wen/dsh-sight
 
 > 引擎切换**即时生效**：工具列表会自动刷新，当前对话即可使用新工具；若未刷新，重启 DSH Desktop 即可。① 与 ② 可同时启用；两个 Figma 插件可同时安装、互不冲突（各自只连本机 127.0.0.1 的桥接服务）。
 
+> 📖 场景化的「怎么对模型说」见下方 **[Figma MCP 使用手册](#figma-mcp-使用手册场景与话术)**。
+
+## Figma MCP 使用手册（场景与话术）
+
+### 0. 先知道模型手里有哪些工具
+
+DSH 把 MCP 工具挂给模型时带命名空间前缀（形如 `mcp__figma-read__figma_read`、`mcp__figma-ui__figma_write`）。对话里不必背前缀——按功能名说即可，模型会自动调用正确的工具；它拿不到图时会先运行 `figma_status` 自检。
+
+| 能力 | 工具面 | 由哪个插件/引擎提供 |
+| --- | --- | --- |
+| ① 设计稿 → 代码（figma-ui-mcp 引擎） | `figma_status` · `figma_read`（get_selection / get_design / get_css / get_design_context / get_component_map / export_svg / scan_design …）· `figma_rules` | Figma UI MCP Bridge |
+| ① 设计稿 → 代码（figwright 引擎） | `figma_status` + `get_design_context` / `component_map` / `token_map` / `icon_map` / `design_diff` / `get_screenshot` / `analyze_project` 等约 27 个只读工具 | Figwright |
+| ② AI 主动设计 | `figma_status` · `figma_write` · `figma_read` · `figma_docs` · `figma_rules`（可写画布） | Figma UI MCP Bridge |
+
+**连接自检话术**（任何会话开始时可选）：
+
+> 先调用 figma_status 确认 Figma 插件已连接；如果没连上，直接告诉我该在 Figma 里运行哪个插件。
+
+### 1. ① 设计稿 → 代码：什么场景用哪个引擎
+
+| 你的需求 | 推荐引擎 | 为什么 |
+| --- | --- | --- |
+| 快速把设计转成**独立**代码/原型（不落仓库） | figma-ui-mcp | 有 `get_css`（即贴即用的 CSS）、`export_svg`、`figma_rules`、`scan_design` 大画布扫描 |
+| 生成**能直接落进你工程**的代码，复用既有组件/Token/图标 | figwright（填「目标代码目录」） | `component_map` / `token_map` / `icon_map` 把 Figma 对象对到本地代码 |
+| 设计改版后只更新**受影响的文件** | figwright | `design_diff` 对照基线报告变化 |
+| 只要**设计规范/样式系统**（色板、字号、间距） | 两者均可 | figma-ui-mcp 的 `figma_rules`/`get_css` 更快出结果 |
+| 一次要读**非常大的画布** | figma-ui-mcp | `scan_design` 渐进式扫描；figwright 对超大树会分节 |
+
+### 2. ① 设计稿 → 代码：场景与话术
+
+> 通用要点：**先选中**要转的画板/节点再发话；话术里给足「技术栈 + 输出位置 + 复用规则」，越具体越准；说完让它**截图自查**。
+
+| 场景 | 怎么对模型说（示例） |
+| --- | --- |
+| A. 选中的组件/卡片转代码 | “把我在 Figma 里选中的卡片实现成 React 组件（Tailwind），先用 get_design_context / get_css 读结构和样式，按选中画板为准，完成后贴出完整代码。” |
+| B. 整页/多画板拆组件 | “这个登录流程页里有 3 个画板（在 Page 1）。按画板逐个读取，拆成页面 + 可复用组件，输出目录结构建议，先不要写文件，给我方案。” |
+| C. 落地到现有工程（figwright 引擎） | “读取当前选中帧 → get_design_context 全量 → 再用 component_map / token_map / icon_map 对照我工程（/Users/you/project）里已有的实现。规则：能复用 src/components 里的组件就 import 复用，颜色间距用工程既有 token，图标用已有 svg；确实没有的才新建，并列出新增清单。” |
+| D. 设计改版增量更新 | “图上有新版本的设计改动。先对选中的画板做 design_diff 与基线对比，把变化点列给我，再只更新受影响的组件/样式文件，不要重写无关部分。” |
+| E. 抽取设计规范 | “读取选中页面（或整个文件的设计系统）：把用到的颜色/字号/间距/圆角整理成一份 Tailwind theme（或 CSS 变量/SCSS token）草案；标注每个值的来源图层，方便我核对。” |
+| F. 只做走查/评审 | “不要写代码。读取选中画板结构与截图，按视觉层级、间距一致性、溢出风险做一轮走查，列出问题清单和修改建议。” |
+
+**一句话模板**（可自行填空）：
+
+> 把我在 Figma 选中的【对象】实现成【技术栈：React + Tailwind v4 / Vue3 + scss …】。项目在【目录：figwright 引擎时必填】；【复用规则：优先 import 已有组件、用工程 token、图标走 assets】；输出到【src/components/…】；完成后用截图核对。
+
+**关于图片/资源**：代码里遇到位图（logo、摄影图）时，让模型留占位并提示“请从 Figma 手动导出资源”，不要凭空近似。
+
+### 3. ② AI 主动设计：场景与话术
+
+> 前提：设置页 ② 已启用且 Figma 里运行了「Figma UI MCP Bridge」（绿点）。② 与 ① 可同时启用，模型两种工具都有；**只有 ② 能改画布**，想避免任何误写时只启用 ①。
+
+| 场景 | 怎么对模型说（示例） |
+| --- | --- |
+| A. 从零画一个界面 | “先在画布上找一块空白位置（用 get_page_nodes 看现有画板），然后画一个移动端登录页：390×844，深色风格，包含邮箱/密码输入、主按钮（用文件里已有的变量与样式，不要硬编码色值），画完截图自查。” |
+| B. 改选中的设计 | “修改当前选中的画板：标题居中、卡片间距统一为 16、主色换成 accent 变量。改完截图给我看，并列出改动点。” |
+| C. 一排/一套页面 | “在登录页右侧 440px 处再画一个注册页，风格与登录页一致，复用它的组件/样式，再补一个忘记密码页，三屏间距统一。” |
+| D. 建组件与设计系统 | “把选中的按钮帧转成 Component（btn/primary），设置好组件属性（文本可替换），再把它用到的颜色建为变量集合 Design Tokens（带 light/dark 模式），后续所有节点都绑定变量。” |
+| E. 图标 | “这一行按钮用内置图标库（loadIcon，比如 settings、bell），不要用 emoji 当图标，尺寸 18、颜色用 token。” |
+| F. 深浅主题预览 | “把 Home 帧克隆两份：Preview/Light 与 Preview/Dark，分别 pin 到 light/dark 模式，让我对照效果。” |
+| G. 原型交互 | “给登录按钮加点击跳转到首页帧的交互（Smart Animate），并列出我还可以加哪些跳转。” |
+| H. 整理/批处理 | “把当前页面里所有叫 Button Copy 的图层批量重命名为 btn/xxx，并统一它们的圆角与填充。” |
+| I. 由描述/代码反向画 UI | “照这段 React 代码的界面结构，在 Figma 画一个 1440×900 的后台页面，布局 1:1 还原：侧边栏 240、顶栏 64、内容区卡片网格。” |
+
+**通用动作模板**：
+
+> 画之前先【读取画布/选区】→ 用文件里已有的【变量/样式/组件】→ 尺寸给【具体数值】→ 每完成一步【截图自查】→ 结尾告诉我【创建/改动清单】和下一步建议。
+
+### 4. 常见问题速查
+
+| 现象 | 处理 |
+| --- | --- |
+| 报 “plugin not connected / Run the … plugin” | ① figma-ui-mcp 引擎跑「Figma UI MCP Bridge」；① figwright 引擎跑「Figwright」；② 跑「Figma UI MCP Bridge」。在 Figma 里运行对应插件后重试即可。 |
+| 想让模型改画布，但它说没有写工具/工具被拒 | ① 是严格只读的；去设置页启用 ②（并重启 DSH 生效），② 才有 `figma_write`。 |
+| 两个引擎/①+② 同时开，工具很多 | 属正常现象：模型按指令选用。想收窄就只开当前任务需要的那个。 |
+| 大画板转码内容超长/丢失细节 | 一次只转一个画板；页面太大让模型“先 scan_design 分节/分区块逐个读”。 |
+| 切换引擎后工具名变了 | 工具列表会自动刷新（当前对话下一轮即可用）；若没刷新，重启 DSH。切换后建议新开指令重新描述任务。 |
+| 生成代码“风格不对、没有用我工程的东西” | ① 用 figwright 引擎并填「目标代码目录」；话术里写明复用规则（见场景 C）。 |
+| 网络差时插件下载失败 | 设置页点「手动下载（Releases）」兜底；下载/解压不涉及 Figma。 |
+
 ## 说明
 
 - 「支持图片」是用户对端点的声明，插件不做端点探测；端点实际不支持图片时由 provider 侧拒绝。
