@@ -46,9 +46,12 @@ DeepSeek Harness（DSH）插件：**多模态图片直传** + **会话图片清�
 
 让模型读取 Figma 设计稿并生成代码。通过 Figma Desktop 中的本地插件桥接读取画布，**不调用 Figma REST API，不需要 Personal Access Token 或代理**，因此不会触发官方 API 限流。
 
-- 数据来源：Figma Desktop 插件 localhost bridge，提供节点树、选区、CSS、样式、变量、组件和截图等读取工具；
-- 使用：首次按设置页路径导入插件 manifest，运行「Figma UI MCP Bridge」，启用后重启 DSH；在 Figma Desktop 打开目标文件并选中画板/节点，再对模型说"实现成 React/CSS"即可；
-- 安全边界：此入口只注册 `figma_status`、`figma_read`、`figma_rules`，不能创建、修改、删除或移动画布节点。
+- 数据来源：Figma Desktop 插件 localhost bridge，提供节点树、选区、CSS、样式、变量、组件、截图与仓库匹配等读取工具；
+- **底层引擎可随时切换**（设置页「Figma MCP → ① 设计稿 → 代码 → 底层引擎」，保存后即时生效、无需重启 DSH）：
+  - `figma-ui-mcp` 原引擎（默认，行为与旧版一致）：Figma 插件「Figma UI MCP Bridge」，模型可见 `figma_status` / `figma_read` / `figma_rules`，保留 get_css / export_svg / scan_design 等读取操作；
+  - `figwright` 接地引擎：Figma 插件「Figwright」（从 [GitHub Releases](https://github.com/awdr74100/figwright/releases/latest) 下载 zip 导入一次），模型可见约 27 个只读工具（`get_design_context` / `component_map` / `token_map` / `icon_map` / `design_diff` / `get_screenshot` 等）。可选填「目标代码目录」，服务器会只读扫描该本机工程，把 Figma 组件/Token/图标匹配到工程已有实现，生成能直接落地、复用既有组件的代码——目录仅本机读取，**不会上传任何代码**；
+- 使用：启用后在 Figma Desktop 运行**当前引擎对应的插件**（两者可同时安装，互不冲突），打开目标文件并选中画板/节点，再对模型说"实现成 React/CSS"即可；
+- 安全边界：此入口无论哪个引擎都只注册只读工具，不能创建、修改、删除或移动画布节点。
 
 #### ② AI 主动设计（需要 Figma 桌面版 + 插件）
 
@@ -129,14 +132,16 @@ dsh plugin --profile desktop update --latest @eric.wen/dsh-sight
 
 ### Figma MCP
 
-1. **设计稿 → 代码**（区块 ①）：导入并运行 Figma 插件 → 设置页启用只读插件 → 重启 DSH → 在 Figma Desktop 打开目标文件并选中画板/节点，说"实现"；
-2. **AI 主动设计**（区块 ②）：按区块内指引安装 Figma 插件 → 启用 → 重启 DSH → 在 Figma 运行「Figma UI MCP Bridge」→ 回对话描述设计需求。
+1. **设计稿 → 代码**（区块 ①）：设置页选择底层引擎并（可选）填「目标代码目录」→ 启用 → 重启 DSH（首次启用需要）→ 在 Figma Desktop 运行**当前引擎对应的插件**（figma-ui-mcp 引擎跑「Figma UI MCP Bridge」；figwright 引擎跑「Figwright」，均在设置页指引内安装）→ 打开目标文件并选中画板/节点，说"实现"；
+2. **AI 主动设计**（区块 ②）：按区块内指引安装「Figma UI MCP Bridge」→ 启用 → 重启 DSH → 在 Figma 运行该插件 → 回对话描述设计需求。
+
+> 引擎切换**即时生效**：工具列表会自动刷新，当前对话即可使用新工具；若未刷新，重启 DSH Desktop 即可。① 与 ② 可同时启用；两个 Figma 插件可同时安装、互不冲突（各自只连本机 127.0.0.1 的桥接服务）。
 
 ## 说明
 
 - 「支持图片」是用户对端点的声明，插件不做端点探测；端点实际不支持图片时由 provider 侧拒绝。
 - 清除图片只影响**模型可见历史**（surface），原始消息仍保留在会话日志与界面转录中。
-- Figma MCP 区块①和②都走 localhost 插件桥且无需代理/Token；①只暴露读取工具，②才暴露写画布工具。
+- Figma MCP 区块①和②都走 localhost 插件桥且无需代理/Token；① 的引擎与目录切换即时生效并持久化，只暴露读取工具，② 才暴露写画布工具。
 - 依赖的 `@deepseek-ai/*` 运行时由 DSH 模块表提供（peer 声明）。
 
 ## 开发

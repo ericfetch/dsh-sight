@@ -21,9 +21,9 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
@@ -40,6 +40,7 @@ import {
   type SightFigmaMcpWriteResult,
   type SightModelEntry,
   type SightProviderEntry,
+  type SightReadBackend,
   type SightReasoningChange,
   type SightReasoningDictionaryEntry,
   type SightSessionImagesResult,
@@ -63,7 +64,8 @@ const FIGMA_MCP_PLUGIN = '@deepseek-ai/dsh-mcp-client'
  * Resolve the entry script of a Figma MCP server. Both packages ship as
  * dependencies of dsh-sight and stay external in the build so the standalone
  * entry files exist on disk for the mcp-client child processes to spawn.
- * - `figma-read-server`: localhost plugin bridge (read-only design-to-code).
+ * - `figma-read-server`: localhost bridge facade (read-only design-to-code,
+ *   dual engine: figma-ui-mcp bridge + figwright child, switched at runtime).
  * - `figma-ui-mcp`: localhost plugin bridge (AI-driven design, read/write).
  */
 const figmaServerBin = (pkg: string, rel: readonly string[]): string => {
@@ -725,6 +727,57 @@ export function apply(ctx: Context): void {
       }
     }
 
+    // Read-mode engine choice lives in a small state file next to the patch,
+    // because the facade process needs a live channel to flip engines without
+    // a restart. The patch row itself stays engine-agnostic: it spawns the
+    // same figma-read-server entry, which reads this file (via the
+    // SIGHT_READ_STATE env the row carries) on every tool listing/call and
+    // swaps its tool registry + sends `tools/list_changed` when it changes.
+
+    interface SightReadStateFile { backend?: unknown; repoDir?: unknown }
+
+    const sightReadStatePath = (): string => join(dirname(patchPath()), 'sight-figma-read.json')
+
+    /** Active read-mode backend + grounding directory; defaults to figma-ui-mcp. */
+    const readSightReadState = (): { backend: SightReadBackend; repoDir: string | null } => {
+      try {
+        const file = sightReadStatePath()
+        if (!existsSync(file)) return { backend: 'figma-ui-mcp', repoDir: null }
+        const value = JSON.parse(readFileSync(file, 'utf8')) as SightReadStateFile
+        const backend: SightReadBackend = value.backend === 'figwright' ? 'figwright' : 'figma-ui-mcp'
+        const repoDir = typeof value.repoDir === 'string' && value.repoDir.length > 0 ? value.repoDir : null
+        return { backend, repoDir }
+      } catch {
+        return { backend: 'figma-ui-mcp', repoDir: null }
+      }
+    }
+
+    /** Atomically persist the read-mode engine choice. */
+    const writeSightReadState = (backend: SightReadBackend, repoDir: string | null): void => {
+      const file = sightReadStatePath()
+      const dir = dirname(file)
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+      const tmp = `${file}.tmp`
+      writeFileSync(tmp, JSON.stringify({ backend, repoDir }, null, 2), 'utf8')
+      renameSync(tmp, file)
+    }
+
+    /** Drop the read-mode engine state (used when the read row is removed). */
+    const clearSightReadState = (): void => {
+      try { rmSync(sightReadStatePath(), { force: true }) } catch { /* best effort */ }
+    }
+
+    /** Validate the grounding directory a user picked for the figwright engine. */
+    const validateRepoDir = (repoDir: string): string | null => {
+      if (!isAbsolute(repoDir)) return 'repoDir 必须是绝对路径'
+      try {
+        if (!statSync(repoDir).isDirectory()) return `repoDir 不是目录: ${repoDir}`
+      } catch {
+        return `repoDir 不存在: ${repoDir}`
+      }
+      return null
+    }
+
     /** Serialize the patch array back to the file (UTF-8, no BOM). */
     const writePatch = (patch: unknown[]): void => {
       const file = patchPath()
@@ -744,17 +797,31 @@ export function apply(ctx: Context): void {
         const manifest = figmaManifestPath()
         const read = rowStatus(findFigmaRow(patch, 'read'))
         const write = rowStatus(findFigmaRow(patch, 'write'))
+        const readEngine = readSightReadState()
         return {
-          read: { ...read, manifestPath: manifest },
-          write: { ...write, manifestPath: manifest },
+          // figma-ui-mcp: the manifest is the shared dep's plugin (also used by
+          // the write row). figwright: the plugin ships via GitHub release zip,
+          // so there is no local manifest to point at.
+          read: {
+            ...read,
+            backend: readEngine.backend,
+            repoDir: readEngine.repoDir,
+            manifestPath: readEngine.backend === 'figma-ui-mcp' ? manifest : null,
+          },
+          write: {
+            ...write,
+            backend: 'figma-ui-mcp',
+            repoDir: null,
+            manifestPath: manifest,
+          },
           patchPath: file,
           profile: activeProfile(),
           error: null,
         }
       } catch (error) {
         return {
-          read: { configured: false, hasToken: false, manifestPath: null },
-          write: { configured: false, hasToken: false, manifestPath: null },
+          read: { configured: false, hasToken: false, manifestPath: null, backend: 'figma-ui-mcp', repoDir: null },
+          write: { configured: false, hasToken: false, manifestPath: null, backend: 'figma-ui-mcp', repoDir: null },
           patchPath: file,
           profile: activeProfile(),
           error: error instanceof Error ? error.message : String(error),
@@ -765,6 +832,9 @@ export function apply(ctx: Context): void {
     /**
      * Write (or update) one Figma MCP row.
      * - read mode: local plugin bridge facade, no token or external network.
+     *   The engine (figma-ui-mcp | figwright) and grounding directory are
+     *   persisted to the sight state file; the spawned facade watches it and
+     *   swaps its read-only tool surface live.
      * - write mode: bare stdio entry, talks to the Figma Desktop plugin over
      *   localhost - no token, no proxy.
      */
@@ -775,6 +845,16 @@ export function apply(ctx: Context): void {
       }
       let row: Record<string, unknown>
       if (mode === 'read') {
+        const backend: SightReadBackend = req.backend === 'figwright' ? 'figwright' : 'figma-ui-mcp'
+        let repoDir: string | null = null
+        const rawRepoDir = typeof req.repoDir === 'string' ? req.repoDir.trim() : ''
+        if (rawRepoDir.length > 0) {
+          const invalid = validateRepoDir(rawRepoDir)
+          if (invalid !== null) return { ok: false, patchPath: patchPath(), error: invalid }
+          repoDir = rawRepoDir
+        }
+        // The row is engine-agnostic; the facade reads SIGHT_READ_STATE to pick
+        // the engine and swaps tools live (tools/list_changed).
         row = {
           id: 'figma-read-mcp',
           name: FIGMA_MCP_PLUGIN,
@@ -783,34 +863,42 @@ export function apply(ctx: Context): void {
             serverName: 'figma-read',
             command: 'node',
             args: [FIGMA_READ_BIN],
+            env: { SIGHT_READ_STATE: sightReadStatePath() },
           },
         }
-      } else {
-        row = {
-          id: 'figma-ui-mcp',
-          name: FIGMA_MCP_PLUGIN,
-          config: {
-            transport: 'stdio',
-            serverName: 'figma-ui',
-            command: 'node',
-            args: [FIGMA_WRITE_BIN],
-          },
-        }
-      }
-      try {
-        const patch = readPatch()
-        let found = findFigmaRow(patch, mode)
-        if (mode === 'read') {
+        try {
+          const patch = readPatch()
+          let found = findFigmaRow(patch, 'read')
           // Remove every legacy REST/read row, including duplicates, so an old
           // token-bearing child process cannot survive the migration.
           while (found !== null) {
             const list = Array.isArray(found.insertEntry.insert) ? found.insertEntry.insert : [found.insertEntry.insert]
             list.splice(found.index, 1)
             found.insertEntry.insert = list
-            found = findFigmaRow(patch, mode)
+            found = findFigmaRow(patch, 'read')
           }
           patch.push({ insert: [row] })
-        } else if (found !== null) {
+          writePatch(patch)
+          writeSightReadState(backend, repoDir)
+        } catch (error) {
+          return { ok: false, patchPath: patchPath(), error: error instanceof Error ? error.message : String(error) }
+        }
+        return { ok: true, patchPath: patchPath(), error: null }
+      }
+      row = {
+        id: 'figma-ui-mcp',
+        name: FIGMA_MCP_PLUGIN,
+        config: {
+          transport: 'stdio',
+          serverName: 'figma-ui',
+          command: 'node',
+          args: [FIGMA_WRITE_BIN],
+        },
+      }
+      try {
+        const patch = readPatch()
+        let found = findFigmaRow(patch, 'write')
+        if (found !== null) {
           const list = Array.isArray(found.insertEntry.insert) ? found.insertEntry.insert : [found.insertEntry.insert]
           list[found.index] = row
           found.insertEntry.insert = list
@@ -836,6 +924,7 @@ export function apply(ctx: Context): void {
           found = findFigmaRow(patch, mode)
         }
         writePatch(patch)
+        if (mode === 'read') clearSightReadState()
         return { ok: true, patchPath: patchPath(), error: null }
       } catch (error) {
         return { ok: false, patchPath: patchPath(), error: error instanceof Error ? error.message : String(error) }

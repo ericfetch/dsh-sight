@@ -31,8 +31,10 @@ const VENDORED_LIBRARY = /^@deepseek-ai\/(cosmokit|schemastery)(\/|$)/
  * both Figma MCP servers are spawned as SEPARATE child processes by the
  * mcp-client bridge, so each needs its standalone entry file on disk (bundling
  * would inline them into lib/index.js and leave nothing for the child to run).
+ * `@figwright/mcp` is required by path at runtime (never statically imported)
+ * and resolved from the installed module tree.
  */
-const NODE_EXTERNALS: readonly string[] = ['figma-ui-mcp', '@modelcontextprotocol/sdk']
+const NODE_EXTERNALS: readonly string[] = ['figma-ui-mcp', '@figwright/mcp', '@modelcontextprotocol/sdk']
 
 const readServer: UserConfig = {
   name: `${PACKAGE_ID}/figma-read-server`,

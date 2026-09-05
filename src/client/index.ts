@@ -24,6 +24,7 @@ import {
   type SightModelEntry,
   type SightReasoningChange,
   type SightReasoningDictionaryEntry,
+  type SightReadBackend,
   type SightSessionImagesResult,
   type SightSetVisionResult,
   type SightStatusResult,
@@ -244,6 +245,9 @@ function FigmaMcpPage(): ReactElement {
   const [writeMessage, setWriteMessage] = React.useState<string | null>(null)
   const [copied, setCopied] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  // Engine controls for the read-only design-to-code facade.
+  const [backend, setBackend] = React.useState<SightReadBackend>('figma-ui-mcp')
+  const [repoDir, setRepoDir] = React.useState('')
 
   const load = React.useCallback(() => {
     rpc<SightFigmaMcpStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpStatus, {})
@@ -253,14 +257,34 @@ function FigmaMcpPage(): ReactElement {
 
   React.useEffect(() => { load() }, [load])
 
+  // Seed the engine + directory controls from the latest backend status.
+  React.useEffect(() => {
+    const read = status?.read
+    if (read === undefined) return
+    setBackend(read.backend)
+    setRepoDir(read.repoDir ?? '')
+  }, [status])
+
+  const engineLabel = backend === 'figwright' ? 'figwright' : 'figma-ui-mcp'
+
   const applyRead = (): void => {
     if (busy !== '') return
     setBusy('read')
     setReadMessage(null); setError(null)
-    const req: SightFigmaMcpApplyRequest = { mode: 'read' }
+    const wasConfigured = status?.read?.configured === true
+    const req: SightFigmaMcpApplyRequest = { mode: 'read', backend, repoDir: repoDir.trim() }
     rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpApply, req)
       .then(value => {
-        setReadMessage(value.ok ? '已启用，请先在 Figma Desktop 运行插件，再重启 DSH Desktop 生效。' : `写入失败: ${value.error ?? 'unknown'}`)
+        if (!value.ok) {
+          setReadMessage(`写入失败: ${value.error ?? 'unknown'}`)
+        } else {
+          const pluginHint = backend === 'figwright'
+            ? '请确认 Figma Desktop 中已运行「Figwright」插件(Connected)。'
+            : '请确认 Figma Desktop 中已运行「Figma UI MCP Bridge」插件(绿点)。'
+          setReadMessage(
+            `${wasConfigured ? '引擎设置已保存' : '已启用'}(${engineLabel}引擎)。工具列表会即时刷新,当前对话即可使用新工具;若未刷新,重启 DSH Desktop 即生效。${pluginHint}`,
+          )
+        }
         load()
       })
       .catch((e: unknown) => setError(formatErrorMessage(e)))
@@ -321,7 +345,10 @@ function FigmaMcpPage(): ReactElement {
 
   const readCfg = status?.read
   const writeCfg = status?.write
-  const manifestPath = readCfg?.manifestPath ?? writeCfg?.manifestPath ?? null
+  // The figma-ui plugin manifest ships with the figma-ui-mcp dependency, used
+  // by ② and by ①'s figma-ui-mcp engine. The figwright engine's plugin is
+  // installed from the project's GitHub release zip (no local manifest path).
+  const manifestPath = writeCfg?.manifestPath ?? readCfg?.manifestPath ?? null
 
   const copyManifestPath = (): void => {
     if (!manifestPath) return
@@ -331,17 +358,18 @@ function FigmaMcpPage(): ReactElement {
     }).catch(() => {})
   }
 
-  // ── 公共卡片: Figma 桌面端插件安装（一次性） ─────────────────────
+  // ── 公共卡片: Figma 桌面端插件安装（按引擎选择，可同时安装） ──────
   children.push(React.createElement('div', { style: { ...GROUP, background: 'rgba(128,128,128,0.04)' } },
     React.createElement('div', { style: GROUP_HEAD },
       React.createElement('span', null, 'Figma 桌面端插件安装'),
-      React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } }, '一次性导入 · 两项功能通用'),
+      React.createElement('span', { style: { fontSize: 11, opacity: 0.6 } }, '两个后端插件 · 可同时安装'),
     ),
     React.createElement('div', { style: { padding: '12px', display: 'flex', flexDirection: 'column', gap: 10 } },
       React.createElement('div', { style: { fontSize: 12, opacity: 0.8, lineHeight: 1.6 } },
-        '「设计稿 → 代码」与「AI 主动设计」在 Figma 端均使用同一个本地桥接插件。只需导入一次，使用时在 Figma 中保持插件运行即可。'),
+        '「设计稿 → 代码」的两种底层引擎与「AI 主动设计」各自使用独立的本地桥接插件，互不冲突、可同时安装；在 Figma 中运行哪个，取决于当前要用的能力（①的引擎选择、②）。'),
       React.createElement('div', { style: { fontSize: 12, opacity: 0.9, lineHeight: 1.7, background: 'rgba(128,128,128,0.08)', borderRadius: 6, padding: '10px 12px', border: '1px solid rgba(128,128,128,0.18)' } },
-        React.createElement('div', null, '① 打开 ', React.createElement('b', null, 'Figma 桌面客户端'), '（网页版无法连接本地 localhost）'),
+        React.createElement('div', { style: { fontWeight: 600 } }, '插件 A — Figma UI MCP Bridge（用于 ① 原引擎 / ② AI 主动设计）'),
+        React.createElement('div', { style: { marginTop: 4 } }, '① 打开 ', React.createElement('b', null, 'Figma 桌面客户端'), '（网页版无法连接本地 localhost）'),
         React.createElement('div', null, '② 顶部菜单：Plugins → Development → Import plugin from manifest...'),
         React.createElement('div', null, '③ 导入下方插件清单文件：'),
         React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, background: 'rgba(0,0,0,0.15)', borderRadius: 4, padding: '6px 8px' } },
@@ -356,13 +384,29 @@ function FigmaMcpPage(): ReactElement {
             : null,
         ),
         React.createElement('div', { style: { marginTop: 6 } }, '④ 在 Figma 中运行「', React.createElement('b', null, 'Figma UI MCP Bridge'), '」插件，看到绿点即已成功连接。'),
+        React.createElement('div', { style: { fontWeight: 600, marginTop: 12 } }, '插件 B — Figwright（用于 ① 接地引擎，仓库级组件/Token 匹配）'),
+        React.createElement('div', { style: { marginTop: 4 } }, '① 下载插件 zip：'),
+        React.createElement('div', { style: { marginTop: 4 } },
+          React.createElement('a', {
+            href: 'https://github.com/awdr74100/figwright/releases/latest',
+            target: '_blank',
+            rel: 'noreferrer',
+            style: { ...BUTTON, display: 'inline-block', textDecoration: 'none' },
+          }, '打开 Figwright Releases 下载页'),
+        ),
+        React.createElement('div', { style: { marginTop: 4 } }, '② 解压 zip → Plugins → Development → Import plugin from manifest... 选择解压目录里的 manifest.json'),
+        React.createElement('div', { style: { marginTop: 4 } }, '③ 在 Figma 中运行「', React.createElement('b', null, 'Figwright'), '」插件，面板显示 Connected 即已成功连接。'),
       ),
       React.createElement('div', { style: { fontSize: 11, opacity: 0.6, lineHeight: 1.5 } },
-        '提示：在下方修改 MCP 启停配置后，需重启 DSH Desktop 方可生效。'),
+        '提示：两个插件都只连接本机 127.0.0.1 的桥接服务，不上传任何数据；修改启停或引擎后，按下方提示重启/刷新 DSH。'),
     ),
   ))
 
-  // ── 区块 1: 设计稿 → 代码（本地只读插件） ─────────────────────────
+  // ── 区块 1: 设计稿 → 代码（本地只读插件，双引擎可切换） ──────────
+  const engines: { id: SightReadBackend; label: string; note: string }[] = [
+    { id: 'figma-ui-mcp', label: 'figma-ui-mcp', note: '原引擎 · 保留 get_css / export_svg / figma_rules' },
+    { id: 'figwright', label: 'figwright', note: '接地引擎 · 扫描本机工程，复用既有组件 / Token / 图标' },
+  ]
   children.push(React.createElement('div', { style: { ...GROUP, marginTop: 10 } },
     React.createElement('div', { style: GROUP_HEAD },
       React.createElement('span', null, '① 设计稿 → 代码'),
@@ -370,18 +414,58 @@ function FigmaMcpPage(): ReactElement {
       readCfg === undefined
         ? null
         : readCfg.configured
-          ? React.createElement(Chip, { tone: 'on' }, '已启用')
+          ? React.createElement(Chip, { tone: 'on' }, `已启用 · ${readCfg.backend}引擎`)
           : React.createElement(Chip, { tone: 'off' }, '未启用'),
     ),
     React.createElement('div', { style: { padding: '12px', display: 'flex', flexDirection: 'column', gap: 10 } },
       React.createElement('div', { style: { fontSize: 12, opacity: 0.8, lineHeight: 1.6 } },
-        '让模型读取 Figma 画布结构并直接生成前端代码（React/Vue/CSS 等）。严格只读，只能提取图层、样式、Token 与截图，绝对不会修改或删除画布节点。'),
+        '让模型读取 Figma 画布并生成前端代码（React/Vue/CSS 等）。严格只读：只能提取图层、样式、Token、截图与仓库匹配信息，绝不修改画布，也不向任何远端发送数据。'),
+      React.createElement('div', { style: { fontSize: 12, fontWeight: 600 } }, '底层引擎（随时切换，即时生效）'),
+      React.createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
+        ...engines.map(option => {
+          const selected = backend === option.id
+          return React.createElement('button', {
+            key: option.id,
+            type: 'button',
+            onClick: () => setBackend(option.id),
+            style: {
+              ...BUTTON,
+              flex: '1 1 220px',
+              textAlign: 'left',
+              padding: '7px 10px',
+              borderColor: selected ? 'rgba(59,130,246,0.85)' : 'rgba(128,128,128,0.35)',
+              background: selected ? 'rgba(59,130,246,0.12)' : 'transparent',
+            },
+          },
+            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: selected ? '#60a5fa' : undefined } },
+              selected ? `✓ ${option.label}` : option.label),
+            React.createElement('div', { style: { fontSize: 11, opacity: 0.65, marginTop: 2 } }, option.note),
+          )
+        }),
+      ),
+      backend === 'figwright'
+        ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+            React.createElement('div', { style: { fontSize: 12, opacity: 0.8 } },
+              '目标代码目录（可选）— 仅本机读取，用于把 Figma 组件/Token/图标匹配到你工程中的实现，不上传任何代码：'),
+            React.createElement('input', {
+              type: 'text',
+              value: repoDir,
+              spellCheck: false,
+              placeholder: '/Users/you/my-project（绝对路径；留空则只读取设计、不做仓库匹配）',
+              onChange: (e: React.ChangeEvent<HTMLInputElement>) => setRepoDir(e.target.value),
+              style: { border: '1px solid rgba(128,128,128,0.35)', background: 'rgba(0,0,0,0.18)', color: 'inherit', borderRadius: 4, padding: '5px 8px', fontSize: 12, fontFamily: 'monospace' },
+            }),
+            React.createElement('div', { style: { fontSize: 11, opacity: 0.6 } },
+              '切换引擎后，模型可见的工具列表会立即刷新（当前对话即可使用新工具）；若未刷新，重启 DSH Desktop 即生效。'),
+          )
+        : React.createElement('div', { style: { fontSize: 11, opacity: 0.6 } },
+            '切换引擎后，模型可见的工具列表会立即刷新（当前对话即可使用新工具）；若未刷新，重启 DSH Desktop 即生效。'),
       readMessage !== null
         ? React.createElement('div', { style: { fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '6px 10px' } }, readMessage)
         : null,
       React.createElement('div', { style: { display: 'flex', gap: 8 } },
-        React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: applyRead },
-          busy === 'read' ? '配置中…' : '启用'),
+        React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '' || status === null, onClick: applyRead },
+          busy === 'read' ? '配置中…' : (readCfg !== undefined && readCfg.configured ? '保存引擎设置' : '启用')),
         readCfg !== undefined && readCfg.configured
           ? React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: removeRead }, '停用')
           : null,

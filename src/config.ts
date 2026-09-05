@@ -140,6 +140,10 @@ export interface SightFigmaMcpStatusResult {
 export interface SightFigmaMcpApplyRequest {
   /** Which capability to configure: 'read' (plugin-based design-to-code) or 'write' (plugin-bridge AI design). */
   readonly mode: 'read' | 'write'
+  /** Read mode engine selection; defaults to 'figma-ui-mcp' when omitted. */
+  readonly backend?: SightReadBackend
+  /** Read mode grounding directory for the figwright engine (absolute local path or empty). */
+  readonly repoDir?: string
   /** Legacy fields accepted for wire compatibility but ignored in read mode. */
   readonly token?: string
   readonly proxy?: string
@@ -151,6 +155,9 @@ export interface SightFigmaMcpRemoveRequest {
   readonly mode: 'read' | 'write'
 }
 
+/** Read-only design-to-code backend engine behind the read mode facade. */
+export type SightReadBackend = 'figma-ui-mcp' | 'figwright'
+
 /** Status of one Figma MCP capability. */
 export interface SightFigmaModeStatus {
   /** Whether the capability's row exists in `cordis.patch.yml`. */
@@ -159,6 +166,10 @@ export interface SightFigmaModeStatus {
   readonly hasToken: boolean
   /** Absolute path of the shared Figma plugin manifest, when available. */
   readonly manifestPath: string | null
+  /** Active read backend engine ('figma-ui-mcp' when no state file exists yet). */
+  readonly backend: SightReadBackend
+  /** Local repo directory the figwright engine may scan (read-only, never uploaded). */
+  readonly repoDir: string | null
 }
 
 /** Result of {@link SIGHT_RPC.figmaMcpApply} / {@link SIGHT_RPC.figmaMcpRemove}. */
