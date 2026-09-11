@@ -114,6 +114,9 @@ const VISION_DICTIONARY: readonly { readonly re: RegExp; readonly family: string
   { re: /^glm-4\.1v/, family: 'Zhipu GLM-4.1V' },
   { re: /^glm-5/, family: 'Zhipu GLM-5' },
   { re: /^doubao-.*vision/, family: 'Doubao Vision' },
+  { re: /^deepseek-flash/, family: 'DeepSeek V4.1 Flash' },
+  { re: /^deepseek-v4\.1/, family: 'DeepSeek V4.1' },
+  { re: /^deepseek-v4-flash-vision-exp/, family: 'DeepSeek V4 Vision' },
   { re: /^deepseek-vl/, family: 'DeepSeek-VL' },
   { re: /^llava/, family: 'LLaVA' },
   { re: /^internvl/, family: 'InternVL' },
@@ -159,6 +162,8 @@ const REASONING_DICTIONARY: readonly { readonly re: RegExp; readonly family: str
   { re: /^o3/, family: 'OpenAI o-series', efforts: { off: null, low: 'low', medium: 'medium', high: 'high' } },
   { re: /^o4/, family: 'OpenAI o-series', efforts: { off: null, low: 'low', medium: 'medium', high: 'high' } },
   { re: /^grok-4/, family: 'xAI Grok 4.x', efforts: { off: null, low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh' } },
+  { re: /^deepseek-flash/, family: 'DeepSeek V4.1', efforts: { off: null, high: 'high', max: 'max' } },
+  { re: /^deepseek-v4\.1/, family: 'DeepSeek V4.1', efforts: { off: null, high: 'high', max: 'max' } },
   { re: /^deepseek-v4/, family: 'DeepSeek V4', efforts: { off: null, high: 'high', max: 'max' } },
   { re: /^glm-5/, family: 'Zhipu GLM-5', efforts: { off: null, high: 'high', xhigh: 'xhigh', max: 'max' } },
   { re: /^kimi-k3/, family: 'Kimi K3', efforts: { off: null, low: 'low', high: 'high', max: 'max' } },
@@ -189,6 +194,24 @@ interface RawModel {
 }
 interface RawSection {
   readonly providers?: Readonly<Record<string, RawProfile | undefined>>
+}
+
+/**
+ * Loose raw `llm-deepseek` shape. The official DeepSeek channel is a distinct
+ * adapter with its own namespace: a model declares image input through
+ * `inputModalities` (default `[text]`), not the pi-ai `input` field.
+ */
+interface RawDeepseekModel {
+  readonly id: string
+  readonly name?: string
+  readonly description?: string
+  readonly contextWindow?: number
+  readonly maxTokens?: number
+  readonly inputModalities?: readonly string[]
+  readonly reasoningEfforts?: Readonly<Record<string, string | null>> | false
+}
+interface RawDeepseekSection {
+  readonly models?: readonly RawDeepseekModel[]
 }
 
 /** Host service surfaces narrowed through the plugin ctx. */
@@ -251,6 +274,20 @@ export function apply(ctx: Context): void {
       return Array.isArray(override?.input) && override.input.includes('image')
     }
 
+    /** Raw (stored) user section of the llm-deepseek namespace, or undefined. */
+    const deepseekSection = (): RawDeepseekSection | undefined => {
+      try {
+        const value = settings.get(DEEPSEEK_NS)
+        return value !== null && typeof value === 'object' ? value as RawDeepseekSection : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    /** Whether a raw DeepSeek channel entry declares image input. */
+    const deepseekDeclaresImage = (model: RawDeepseekModel | undefined): boolean =>
+      Array.isArray(model?.inputModalities) && model.inputModalities.includes('image')
+
     /** Whether the raw profile already declares a reasoning-effort map for one model. */
     const rawDeclaresReasoning = (profile: RawProfile | undefined, model: string): boolean => {
       if (profile === undefined) return false
@@ -268,6 +305,24 @@ export function apply(ctx: Context): void {
     const writeModelVision = async (provider: string, model: string, vision: boolean): Promise<void> => {
       const profile = rawSection()?.providers?.[provider]
       if (profile === undefined || typeof profile !== 'object') {
+        // The official DeepSeek channel lives in its own namespace and declares
+        // image input with `inputModalities` instead of the pi-ai `input` field.
+        if (provider === DEEPSEEK_PROVIDER) {
+          const models = deepseekSection()?.models
+          if (!Array.isArray(models) || models.length === 0) {
+            throw new Error(`provider "${provider}" is not configured under ${DEEPSEEK_NS}`)
+          }
+          const target = models.find(m => m !== null && typeof m === 'object' && m.id === model)
+          if (target === undefined) throw new Error(`model "${model}" is not listed in ${DEEPSEEK_NS} models`)
+          const next = models.map(m => {
+            if (m === null || typeof m !== 'object' || m.id !== model) return m
+            if (vision) return { ...m, inputModalities: ['text', 'image'] }
+            const { inputModalities: _dropped, ...rest } = m
+            return rest
+          })
+          await settings.mutate(DEEPSEEK_NS, [{ op: 'set', path: ['models'], value: next }])
+          return
+        }
         throw new Error(`provider "${provider}" is not configured under ${NS}`)
       }
       const rawModels = Array.isArray(profile.models) ? profile.models : undefined
@@ -358,27 +413,26 @@ export function apply(ctx: Context): void {
       // The official DeepSeek channel is a distinct adapter (deepseek-official)
       // configured under the llm-deepseek namespace, not a pi-ai provider. List
       // it as its own group so its models appear on the settings page. Its
-      // adapter reports text-only inputModalities, so models render as
-      // "text-only" — that is the platform's real capability, not a missing
-      // declaration.
+      // adapter defaults every model to text-only until that model opts in with
+      // `inputModalities: [text, image]`, which is what the toggle writes.
       try {
-        const deepseekSection = settings.get(DEEPSEEK_NS) as { models?: readonly RawModel[] } | undefined
-        const deepseekModels = Array.isArray(deepseekSection?.models) ? deepseekSection.models : []
+        const rawDeepseekModels = deepseekSection()?.models
+        const deepseekModels = Array.isArray(rawDeepseekModels) ? rawDeepseekModels : []
         if (deepseekModels.length > 0) {
           const models: SightModelEntry[] = await Promise.all(deepseekModels.map(async (dm): Promise<SightModelEntry> => {
             const id = typeof dm?.id === 'string' ? dm.id : ''
             if (id.length === 0) return { id: '', name: '', vision: false, declared: false, matched: null, source: 'none', reasoning: null }
-            let vision = false
+            const declared = deepseekDeclaresImage(dm)
+            let vision = declared
             let adapterReasoning: readonly { id?: string; name?: string }[] | undefined
             try {
               const info = await llm.resolveModelInfo(DEEPSEEK_PROVIDER, id)
-              vision = Array.isArray(info.inputModalities) && info.inputModalities.includes('image')
+              vision = (Array.isArray(info.inputModalities) && info.inputModalities.includes('image')) || declared
               adapterReasoning = info.reasoning?.efforts
             } catch {
-              vision = false
+              vision = declared
             }
             const matched = familyOf(id)
-            const declared = Array.isArray(dm.input) && dm.input.includes('image')
             const reasoning = ((): SightModelEntry['reasoning'] => {
               if (Array.isArray(adapterReasoning)) {
                 const levels = adapterReasoning.map(e => (typeof e?.id === 'string' && e.id.length > 0 ? e.id : undefined))
@@ -408,12 +462,37 @@ export function apply(ctx: Context): void {
       return { namespace: NS, dictionary, reasoningDictionary, providers }
     }
 
+    /**
+     * Bulk-declare image input for official-DeepSeek-channel models the vision
+     * dictionary recognises. That channel opts in through `inputModalities`,
+     * which is the same declaration the per-model toggle writes.
+     */
+    const applyDictionaryToDeepseek = async (seed: SightApplyDictionaryResult): Promise<SightApplyDictionaryResult> => {
+      const models = deepseekSection()?.models
+      if (!Array.isArray(models) || models.length === 0) return seed
+      let changed = false
+      const next = models.map(m => {
+        if (m === null || typeof m !== 'object' || typeof m.id !== 'string') return m
+        if (familyOf(m.id) === undefined) return m
+        if (deepseekDeclaresImage(m)) return m
+        changed = true
+        return { ...m, inputModalities: ['text', 'image'] }
+      })
+      if (!changed) return seed
+      await settings.mutate(DEEPSEEK_NS, [{ op: 'set', path: ['models'], value: next }])
+      const imageModels = next.filter(m => m !== null && typeof m === 'object' && deepseekDeclaresImage(m)).length
+      return { applied: seed.applied + imageModels, providers: seed.providers + 1 }
+    }
+
     /** Bulk-declare image input for every configured model matching the dictionary. */
     const applyDictionary = async (): Promise<SightApplyDictionaryResult> => {
       const rawProviders = rawSection()?.providers
-      if (rawProviders === undefined || typeof rawProviders !== 'object') return { applied: 0, providers: 0 }
       let applied = 0
       let touchedProviders = 0
+      if (rawProviders === undefined || typeof rawProviders !== 'object') {
+        // The official DeepSeek channel may be the only configured route.
+        return applyDictionaryToDeepseek({ applied, providers: touchedProviders })
+      }
       for (const [provider, profile] of Object.entries(rawProviders)) {
         if (profile === undefined || typeof profile !== 'object') continue
         const rawModels = Array.isArray(profile.models) ? profile.models : undefined
@@ -451,7 +530,7 @@ export function apply(ctx: Context): void {
           // A model not in the catalog is refused by the namespace validator.
         }
       }
-      return { applied, providers: touchedProviders }
+      return applyDictionaryToDeepseek({ applied, providers: touchedProviders })
     }
 
     /**
