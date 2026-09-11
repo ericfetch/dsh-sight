@@ -62,6 +62,15 @@ const ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, pad
 const GROUP: CSSProperties = { border: '1px solid rgba(128,128,128,0.25)', borderRadius: 8, overflow: 'hidden' }
 const GROUP_HEAD: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 12, fontWeight: 600, borderBottom: '1px solid rgba(128,128,128,0.25)' }
 
+/** Format user-facing error message, giving actionable hints for version mismatches / restart requirements. */
+function formatErrorMessage(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e)
+  if (msg.includes('unknown dsh-sight endpoint')) {
+    return '检测到插件已更新，但后端服务尚未重新加载。请完全退出并重启 DSH Desktop 客户端以生效。'
+  }
+  return msg
+}
+
 function Chip(props: { tone: 'on' | 'off' | 'warn' | 'info'; children?: ReactNode }): ReactElement {
   const style = props.tone === 'on' ? CHIP_ON : props.tone === 'off' ? CHIP_OFF : props.tone === 'warn' ? CHIP_WARN : CHIP_INFO
   return React.createElement('span', { style }, props.children)
@@ -108,7 +117,7 @@ function SightPage(): ReactElement {
   const load = React.useCallback(() => {
     rpc<SightStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.status, {})
       .then(value => { setData(value); setError(null) })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
   }, [])
 
   React.useEffect(() => { load() }, [load])
@@ -118,7 +127,7 @@ function SightPage(): ReactElement {
     setBusy(`${provider}/${model}`)
     rpc<SightSetVisionResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.setVision, { provider, model, vision })
       .then(() => load())
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
       .finally(() => setBusy(''))
   }
 
@@ -127,7 +136,7 @@ function SightPage(): ReactElement {
     setBusy('apply')
     rpc(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.applyDictionary, {})
       .then(() => load())
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
       .finally(() => setBusy(''))
   }
 
@@ -136,7 +145,7 @@ function SightPage(): ReactElement {
     setBusy('reasoning')
     rpc<SightApplyReasoningResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.applyReasoning, {})
       .then(value => { setReasoningResult(value); load() })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
       .finally(() => setBusy(''))
   }
 
@@ -229,8 +238,8 @@ function FigmaMcpPage(): ReactElement {
 
   const load = React.useCallback(() => {
     rpc<SightFigmaMcpStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpStatus, {})
-      .then(value => setStatus(value))
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .then(value => { setStatus(value); setError(null) })
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
   }, [])
 
   React.useEffect(() => { load() }, [load])
@@ -251,7 +260,7 @@ function FigmaMcpPage(): ReactElement {
         setReadMessage(value.ok ? '已启用，请重启 DSH Desktop 生效。' : `写入失败: ${value.error ?? 'unknown'}`)
         load()
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
       .finally(() => setBusy(''))
   }
 
@@ -262,7 +271,7 @@ function FigmaMcpPage(): ReactElement {
     const req: SightFigmaMcpRemoveRequest = { mode: 'read' }
     rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpRemove, req)
       .then(value => { setReadMessage(value.ok ? '已停用。' : `移除失败: ${value.error ?? 'unknown'}`); load() })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
       .finally(() => setBusy(''))
   }
 
@@ -273,7 +282,7 @@ function FigmaMcpPage(): ReactElement {
     const req: SightFigmaMcpApplyRequest = { mode: 'write' }
     rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpApply, req)
       .then(value => { setWriteMessage(value.ok ? '已启用，请重启 DSH Desktop 生效。' : `写入失败: ${value.error ?? 'unknown'}`); load() })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
       .finally(() => setBusy(''))
   }
 
@@ -284,7 +293,7 @@ function FigmaMcpPage(): ReactElement {
     const req: SightFigmaMcpRemoveRequest = { mode: 'write' }
     rpc<SightFigmaMcpWriteResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpRemove, req)
       .then(value => { setWriteMessage(value.ok ? '已停用。' : `移除失败: ${value.error ?? 'unknown'}`); load() })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
       .finally(() => setBusy(''))
   }
 
@@ -299,7 +308,17 @@ function FigmaMcpPage(): ReactElement {
     '分两步接入 Figma：先用 Token 读取设计稿生成代码；需要 AI 直接在 Figma 里画图时，再启用插件桥接。'))
 
   if (error !== null) {
-    children.push(React.createElement('div', { style: { color: '#ef4444', fontSize: 12 } }, error))
+    children.push(React.createElement('div', {
+      style: {
+        color: '#f87171',
+        background: 'rgba(239, 68, 68, 0.1)',
+        border: '1px solid rgba(239, 68, 68, 0.3)',
+        borderRadius: 6,
+        padding: '8px 12px',
+        fontSize: 13,
+        lineHeight: 1.5,
+      },
+    }, error))
   }
 
   const readCfg = status?.read
