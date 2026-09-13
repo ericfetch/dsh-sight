@@ -22,6 +22,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -224,10 +225,96 @@ function fail(message: string): RpcResult<unknown> {
   return { ok: false, error: { code: 'internal', message, details: {} } }
 }
 
+/** Cap for one `/sight` request body: every endpoint carries a small JSON payload. */
+const MAX_SIGHT_BODY_BYTES = 1 << 20
+
+/** Abort signal handed to the connection-shaped handler; `/sight` work never outlives a request. */
+const SIGHT_NEVER_ABORTED = new AbortController().signal
+
 /**
- * Host half: serve the `/sight` loopback channel. The channel is registered on
- * the Connection service with `authority: 'loopback'`, so only the plugin's
- * own browser half (and any local page) may call it.
+ * Loopback Host/Origin fence for {@link SIGHT_RPC_CHANNEL}, mirroring the
+ * `authority: 'loopback'` check Connection applies to a registered channel.
+ * Only used on runtimes whose Connection exposes no `requestRejection`.
+ * @param req - raw request headers.
+ * @returns the HTTP status to reject with, or undefined to let the call through.
+ */
+function loopbackRejection(req: IncomingMessage): number | undefined {
+  const host = req.headers.host
+  if (host === undefined) return 403
+  let hostUrl: URL
+  try {
+    hostUrl = new URL(`http://${host}`)
+  } catch {
+    return 403
+  }
+  const parts = hostUrl.hostname.split('.')
+  const loopback = hostUrl.hostname === 'localhost' || hostUrl.hostname === '[::1]'
+    || (parts.length === 4 && parts[0] === '127' && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255))
+  if (!loopback) return 403
+  if (req.headers['sec-fetch-site'] === 'cross-site') return 403
+  const origin = req.headers.origin
+  if (origin === undefined) return undefined
+  try {
+    return new URL(origin).host === hostUrl.host ? undefined : 403
+  } catch {
+    return 403
+  }
+}
+
+/**
+ * Endpoint named by a `/sight/<endpoint>` pathname.
+ * @param rawUrl - the request target.
+ * @returns the endpoint segment, or undefined when the path is not this channel's.
+ */
+function sightEndpoint(rawUrl: string | undefined): string | undefined {
+  const pathname = new URL(rawUrl ?? '/', 'http://dsh.invalid').pathname
+  if (!pathname.startsWith(`${SIGHT_RPC_CHANNEL}/`)) return undefined
+  const endpoint = pathname.slice(SIGHT_RPC_CHANNEL.length + 1)
+  const segments = endpoint.split('/')
+  if (segments.some(segment => segment.length === 0 || !/^[A-Za-z0-9_$.-]+$/.test(segment))) return undefined
+  return endpoint
+}
+
+/**
+ * Buffer one request body, refusing anything past {@link MAX_SIGHT_BODY_BYTES}.
+ * @param req - raw request.
+ * @returns the decoded body text.
+ */
+function readSightBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > MAX_SIGHT_BODY_BYTES) {
+        reject(new Error('request body too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
+
+/** Write one JSON response for the browser half. */
+function writeSightJson(res: ServerResponse, body: unknown): void {
+  res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+  res.end(JSON.stringify(body))
+}
+
+/**
+ * Host half: serve the `/sight` channel. The route is registered on the web
+ * server directly rather than through `connection.rpc.handle`, because
+ * Connection 0.1.5+ resolves the web server against its *own* fiber when a
+ * caller mounts a channel (`owner.effect(() => owner.webServer.register(route))`
+ * after `const owner = this.ctx`), which fails with `cannot get property
+ * "webServer" without inject` for every plugin; the request then fell through
+ * to the static fallback as HTTP 405. The fence is Connection's own
+ * `requestRejection` when the runtime has it, and the equivalent loopback
+ * Host/Origin check otherwise. The web server is injected separately so a
+ * headless profile (no web server) still gets the rest of the Host half.
  */
 export function apply(ctx: Context): void {
   ctx.inject(['connection', 'settings', 'llm', 'agents'], (sightCtx) => {
@@ -1027,9 +1114,71 @@ export function apply(ctx: Context): void {
       }
     }
 
-    sightCtx.effect(
-      () => connection.rpc.handle(SIGHT_RPC_CHANNEL, handler, { authority: 'loopback' }),
-      'dsh-sight: loopback RPC',
-    )
+    /** Connection's own browser fence when the runtime provides one, else the loopback equivalent. */
+    const connectionFence = connection as unknown as { requestRejection?(req: IncomingMessage): number | undefined }
+    const reject = typeof connectionFence.requestRejection === 'function'
+      ? (req: IncomingMessage): number | undefined => connectionFence.requestRejection?.(req)
+      : loopbackRejection
+
+    sightCtx.inject(['webServer'], (webCtx) => {
+      const webServer = webCtx.get('webServer') as unknown as {
+        register(route: {
+          kind: 'prefix'
+          path: string
+          handler(req: IncomingMessage, res: ServerResponse): Promise<void>
+        }): () => void
+      }
+
+      webCtx.effect(() => webServer.register({
+        kind: 'prefix',
+        path: SIGHT_RPC_CHANNEL,
+        handler: async (req, res) => {
+          const rejection = reject(req)
+          if (rejection !== undefined) {
+            res.writeHead(rejection)
+            res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+            return
+          }
+          const endpoint = sightEndpoint(req.url)
+          if (req.method !== 'POST' || endpoint === undefined) {
+            res.writeHead(404)
+            res.end()
+            return
+          }
+          if (req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
+            res.writeHead(415)
+            res.end('content type must be application/json')
+            return
+          }
+          let envelope: { rpcId?: unknown; method?: unknown; payload?: unknown }
+          try {
+            envelope = JSON.parse(await readSightBody(req)) as typeof envelope
+          } catch {
+            res.writeHead(400)
+            res.end('body is not JSON')
+            return
+          }
+          const rpcId = typeof envelope.rpcId === 'string' ? envelope.rpcId : 'invalid-request'
+          if (envelope.method !== endpoint) {
+            writeSightJson(res, {
+              type: 'server-response',
+              rpcId,
+              result: fail(`method ${JSON.stringify(String(envelope.method))} does not match endpoint ${JSON.stringify(endpoint)}`),
+            })
+            return
+          }
+          try {
+            writeSightJson(res, {
+              type: 'server-response',
+              rpcId,
+              result: await handler(endpoint, envelope.payload, SIGHT_NEVER_ABORTED),
+            })
+          } catch (error) {
+            res.writeHead(500)
+            res.end(`handler failure: ${String(error)}`)
+          }
+        },
+      }), 'dsh-sight: /sight route')
+    })
   })
 }
