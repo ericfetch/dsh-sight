@@ -1,7 +1,7 @@
 {
   "name": "@eric.wen/dsh-sight",
-  "version": "0.1.13",
-  "description": "DeepSeek Harness plugin: direct multimodal image transfer declarations + per-session image clearing, reasoning-effort auto-fill, and progressive Figma MCP bridging (design-to-code + AI-driven design).",
+  "version": "0.1.16",
+  "description": "DeepSeek Harness plugin: reasoning-effort auto-fill declarations and progressive Figma MCP bridging (design-to-code + AI-driven design).",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -16,9 +16,9 @@
     "deepseek-harness",
     "dsh",
     "cordis",
-    "multimodal",
-    "image",
-    "vision",
+    "reasoning-effort",
+    "figma",
+    "mcp",
     "plugin"
   ],
   "main": "lib/index.js",
@@ -52,8 +52,7 @@
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
   },
@@ -72,16 +71,13 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-connection": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-locale": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-conversation": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-settings": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-slots": "0.1.0-rc.6",
     "@deepseek-ai/dsh-host-apiproxy": "0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
     "react": "^18.2.0"
   },
   "peerDependenciesMeta": {
@@ -89,9 +85,6 @@
       "optional": true
     },
     "@deepseek-ai/dsh-client-runtime": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-client-ui-conversation": {
       "optional": true
     },
     "@deepseek-ai/dsh-client-ui-settings": {
@@ -103,16 +96,13 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
-    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-connection": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-locale": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-conversation": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-settings": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-slots": "0.1.0-rc.6",
     "@deepseek-ai/dsh-host-apiproxy": "0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
     "@deepseek-ai/dsh-settings": "0.1.0-rc.6",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
