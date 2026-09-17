@@ -227,12 +227,17 @@ function parsePluginConnected(callResult: unknown): boolean {
       ? JSON.parse((textBlock as { text?: unknown }).text as string) as {
           sessions?: { connectedCount?: unknown }
           pluginConnected?: unknown
+          plugin?: unknown
         }
       : undefined
     if (parsed === undefined) return true
     if (parsed.pluginConnected === true) return true
     const count = parsed.sessions?.connectedCount
-    return typeof count === 'number' && count > 0
+    if (typeof count === 'number' && count > 0) return true
+    // Follower-mode pings omit `sessions` but carry an e2e `plugin` object when
+    // a Figma plugin instance is attached through the leader relay; `plugin`
+    // is null only when nothing is connected.
+    return parsed.plugin !== null && typeof parsed.plugin === 'object'
   } catch {
     // Unknown payload shape: the server answered, so don't block the call.
     return true
