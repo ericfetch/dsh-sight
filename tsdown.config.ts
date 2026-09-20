@@ -62,6 +62,24 @@ const nodeLibrary: UserConfig = {
   external: [...NODE_EXTERNALS],
 }
 
+/**
+ * Write half: the facade that fronts the upstream figma-ui-mcp server. Like
+ * the read facade it is spawned as its own child process by the mcp-client
+ * bridge, so it needs a standalone entry file on disk.
+ */
+const writeServer: UserConfig = {
+  name: `${PACKAGE_ID}/figma-ui-server`,
+  entry: { 'figma-ui-server': 'src/figma-ui-server.ts' },
+  outDir: 'lib',
+  format: ['esm'],
+  platform: 'node',
+  target: 'es2024',
+  fixedExtension: false,
+  dts: false,
+  clean: false,
+  external: [...NODE_EXTERNALS],
+}
+
 const clientBundle: UserConfig = {
   name: `${PACKAGE_ID}/client`,
   entry: { client: 'src/client/index.ts' },
@@ -98,4 +116,4 @@ const clientBundle: UserConfig = {
   },
 }
 
-export default defineConfig([nodeLibrary, readServer, clientBundle])
+export default defineConfig([nodeLibrary, readServer, writeServer, clientBundle])

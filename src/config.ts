@@ -16,6 +16,7 @@ export const SIGHT_RPC = {
   figmaMcpRemove: 'figmaMcpRemove',
   repoDirList: 'repoDirList',
   figwrightPluginUpdate: 'figwrightPluginUpdate',
+  bridgePluginUpdate: 'bridgePluginUpdate',
 } as const
 
 /** One reasoning-effort dictionary entry rendered as a chip on the settings page. */
@@ -122,6 +123,10 @@ export interface SightFigmaModeStatus {
   readonly repoDir: string | null
   /** Locally extracted Figwright plugin (release zip, kept at the latest copy only). */
   readonly figwrightPlugin: SightFigwrightPluginInfo
+  /** Locally patched Figma UI MCP Bridge copy (per-file session routing). */
+  readonly bridgePlugin: SightBridgePluginInfo
+  /** Generated figma-ui-mcp entry whose http-proxy keeps `sessionId` intact. */
+  readonly bridgeServer: SightBridgeServerInfo
 }
 
 /** Result of {@link SIGHT_RPC.figmaMcpApply} / {@link SIGHT_RPC.figmaMcpRemove}. */
@@ -163,4 +168,42 @@ export interface SightFigwrightPluginUpdateResult {
   readonly tag: string | null
   readonly manifestPath: string | null
   readonly error: string | null
+}
+
+/**
+ * Locally managed Figma UI MCP Bridge plugin copy: the upstream plugin plus the
+ * per-file session patch that gives every open Figma file its own bridge
+ * session (without it, all files share one queue and a write can land in the
+ * wrong file).
+ */
+export interface SightBridgePluginInfo {
+  /** True when the managed copy carries the current patch revision. */
+  readonly patched: boolean
+  /** `figma-ui-mcp` package version the copy was built from; null when unknown. */
+  readonly upstreamVersion: string | null
+  /** Absolute path of the copy's `manifest.json`; null when no copy exists. */
+  readonly manifestPath: string | null
+  /** Why the copy could not be (re)built — e.g. a moved upstream anchor. Null when healthy. */
+  readonly error: string | null
+}
+
+/**
+ * Generated entry for the upstream figma-ui-mcp server. Its http-proxy forwards
+ * `sessionId`, which the package's own proxy drops — without it a pinned file is
+ * ignored whenever another process already owns the bridge.
+ */
+export interface SightBridgeServerInfo {
+  /** True when the generated entry carries the current patch revision. */
+  readonly patched: boolean
+  /** Absolute path of the generated entry; null when it could not be written. */
+  readonly entryPath: string | null
+  /** Why generation failed (upstream layout change); null when healthy. */
+  readonly error: string | null
+}
+
+/** Result of {@link SIGHT_RPC.bridgePluginUpdate}. */
+export interface SightBridgePluginUpdateResult extends SightBridgePluginInfo {
+  readonly ok: boolean
+  /** State of the generated figma-ui-mcp entry (http-proxy sessionId patch). */
+  readonly bridgeServer: SightBridgeServerInfo
 }

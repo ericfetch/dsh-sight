@@ -15,6 +15,7 @@ import {
   SIGHT_RPC,
   SIGHT_RPC_CHANNEL,
   type SightApplyReasoningResult,
+  type SightBridgePluginUpdateResult,
   type SightDirListing,
   type SightFigmaMcpApplyRequest,
   type SightFigmaMcpRemoveRequest,
@@ -278,6 +279,7 @@ function FigmaMcpPage(): ReactElement {
   const [repoDir, setRepoDir] = React.useState('')
   const [pickerOpen, setPickerOpen] = React.useState(false)
   const [fwMessage, setFwMessage] = React.useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
+  const [bridgeMessage, setBridgeMessage] = React.useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
 
   const load = React.useCallback(() => {
     rpc<SightFigmaMcpStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.figmaMcpStatus, {})
@@ -310,7 +312,7 @@ function FigmaMcpPage(): ReactElement {
         } else {
           const pluginHint = backend === 'figwright'
             ? '请确认 Figma Desktop 中已运行「Figwright」插件(Connected)。'
-            : '请确认 Figma Desktop 中已运行「Figma UI MCP Bridge」插件(绿点)。'
+            : '请确认 Figma Desktop 中已运行「Figma UI MCP Bridge (Sight)」插件(绿点)。'
           setReadMessage(
             `${wasConfigured ? '引擎设置已保存' : '已启用'}(${engineLabel}引擎)。工具列表会即时刷新,当前对话即可使用新工具;若未刷新,重启 DSH Desktop 即生效。${pluginHint}`,
           )
@@ -411,6 +413,28 @@ function FigmaMcpPage(): ReactElement {
       .finally(() => setBusy(''))
   }
 
+  /**
+   * Rebuild the patched Figma UI MCP Bridge copy: the host copies the installed
+   * upstream plugin and re-applies the per-file session patch (needed after a
+   * figma-ui-mcp upgrade, or when the copy was imported from an older path).
+   */
+  const rebuildBridgePlugin = (): void => {
+    if (busy !== '') return
+    setBusy('bridge')
+    setBridgeMessage(null); setError(null)
+    rpc<SightBridgePluginUpdateResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.bridgePluginUpdate, {})
+      .then(value => {
+        if (value.ok) {
+          setBridgeMessage({ tone: 'ok', text: `副本已生成（上游 ${value.upstreamVersion ?? 'unknown'}）：用上面的路径在 Figma 中重新导入一次即可。` })
+        } else {
+          setBridgeMessage({ tone: 'err', text: `生成失败: ${value.error ?? 'unknown'}` })
+        }
+        load()
+      })
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
+      .finally(() => setBusy(''))
+  }
+
   // ── 公共卡片: Figma 桌面端插件安装（按引擎选择，可同时安装） ──────
   children.push(React.createElement('div', { style: { ...GROUP, background: 'rgba(128,128,128,0.04)' } },
     React.createElement('div', { style: GROUP_HEAD },
@@ -421,7 +445,7 @@ function FigmaMcpPage(): ReactElement {
       React.createElement('div', { style: { fontSize: 12, opacity: 0.8, lineHeight: 1.6 } },
         '「设计稿 → 代码」的两种底层引擎与「AI 主动设计」各自使用独立的本地桥接插件，互不冲突、可同时安装；在 Figma 中运行哪个，取决于当前要用的能力（①的引擎选择、②）。'),
       React.createElement('div', { style: { fontSize: 12, opacity: 0.9, lineHeight: 1.7, background: 'rgba(128,128,128,0.08)', borderRadius: 6, padding: '10px 12px', border: '1px solid rgba(128,128,128,0.18)' } },
-        React.createElement('div', { style: { fontWeight: 600 } }, '插件 A — Figma UI MCP Bridge（用于 ① 原引擎 / ② AI 主动设计）'),
+        React.createElement('div', { style: { fontWeight: 600 } }, '插件 A — Figma UI MCP Bridge (Sight)（用于 ① 原引擎 / ② AI 主动设计）'),
         React.createElement('div', { style: { marginTop: 4 } }, '① 打开 ', React.createElement('b', null, 'Figma 桌面客户端'), '（网页版无法连接本地 localhost）'),
         React.createElement('div', null, '② 顶部菜单：Plugins → Development → Import plugin from manifest...'),
         React.createElement('div', null, '③ 导入下方插件清单文件：'),
@@ -436,7 +460,40 @@ function FigmaMcpPage(): ReactElement {
               }, copied ? '已复制 ✓' : '复制路径')
             : null,
         ),
-        React.createElement('div', { style: { marginTop: 6 } }, '④ 在 Figma 中运行「', React.createElement('b', null, 'Figma UI MCP Bridge'), '」插件，看到绿点即已成功连接。'),
+        React.createElement('div', { style: { marginTop: 6 } }, '④ 在 Figma 中运行「', React.createElement('b', null, 'Figma UI MCP Bridge (Sight)'), '」插件，看到绿点即已成功连接。'),
+        (() => {
+          const bp = writeCfg?.bridgePlugin ?? readCfg?.bridgePlugin ?? null
+          const bs = writeCfg?.bridgeServer ?? readCfg?.bridgeServer ?? null
+          const rows: ReactNode[] = []
+          rows.push(React.createElement('div', { key: 'state', style: { marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+            React.createElement(Chip, { tone: bp?.patched === true ? 'on' : 'warn' },
+              bp?.patched === true ? `多文件路由补丁 ${bp.upstreamVersion ?? ''}` : '未打多文件路由补丁'),
+            React.createElement(Chip, { tone: bs?.patched === true ? 'on' : 'warn' },
+              bs?.patched === true ? '服务端入口已补丁' : '服务端入口未补丁'),
+            React.createElement('button', {
+              type: 'button',
+              style: { ...BUTTON, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap', minHeight: 24 },
+              disabled: busy !== '',
+              onClick: rebuildBridgePlugin,
+            }, busy === 'bridge' ? '生成中…' : '重新生成副本'),
+          ))
+          rows.push(React.createElement('div', { key: 'why', style: { marginTop: 4, fontSize: 11, opacity: 0.6, lineHeight: 1.5 } },
+            '这个副本给每个 Figma 文件一个独立的桥接会话：同时开着多个文件时，读写锁定到指定文件，而不是随缘落笔（上游插件不报身份，所有文件共用一条队列，写入可能落到另一个文件）。'))
+          if (bp?.patched === false && bp.error !== null) {
+            rows.push(React.createElement('div', { key: 'err', style: { marginTop: 4, fontSize: 11, color: '#eab308', lineHeight: 1.5 } },
+              `补丁未生成：${bp.error}（当前回退到上游插件，单文件可用）`))
+          } else if (bs?.patched === false && bs.error !== null) {
+            rows.push(React.createElement('div', { key: 'serr', style: { marginTop: 4, fontSize: 11, color: '#eab308', lineHeight: 1.5 } },
+              `服务端入口未补丁：${bs.error}（写入端仍可用，但桥接被其他进程占用时无法锁定文件）`))
+          } else if (bp?.patched === true) {
+            rows.push(React.createElement('div', { key: 'reimport', style: { marginTop: 4, fontSize: 11, color: '#eab308', lineHeight: 1.5 } },
+              'Figma 导入时会复制插件到自己的目录：若之前导入过旧插件，请先删除那一项，再用上面的路径重新导入一次，否则多文件路由不生效。'))
+          }
+          if (bridgeMessage !== null) {
+            rows.push(React.createElement('div', { key: 'msg', style: { marginTop: 4, fontSize: 12, color: bridgeMessage.tone === 'ok' ? '#4ade80' : '#f87171' } }, bridgeMessage.text))
+          }
+          return rows
+        })(),
         React.createElement('div', { style: { fontWeight: 600, marginTop: 12 } }, '插件 B — Figwright（用于 ① 接地引擎，仓库级组件/Token 匹配）'),
         (() => {
           const fwPlugin = readCfg?.figwrightPlugin

@@ -89,7 +89,7 @@ const READ_OPERATIONS = new Set([
 const UI_TOOLS = [
   {
     name: 'figma_status',
-    description: 'Check whether the read-only Figma plugin bridge is connected.',
+    description: 'Check whether the read-only Figma plugin bridge is connected, and list every connected Figma file (with its sessionId) for multi-file routing.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
@@ -377,7 +377,7 @@ const figwright = new FigwrightEngine()
 
 const FIGW_STATUS_TOOL: McpToolSpec = {
   name: 'figma_status',
-  description: 'Check whether the read-only figwright bridge is connected, and report the active engine and grounding directory.',
+  description: 'Check whether the read-only figwright bridge is connected, report the active engine and grounding directory, and show which Figma file reads currently route to (multi-file routing: the file you last touched wins).',
   inputSchema: { type: 'object', properties: {}, required: [] },
 }
 
@@ -410,6 +410,27 @@ async function refresh(state: ReadState): Promise<ReadBackend> {
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
+/** Parse the JSON body an MCP tool result carries in its first text block. */
+function payloadOf(result: unknown): Record<string, any> | null {
+  try {
+    const blocks = (result as { content?: unknown[] } | null)?.content
+    const text = Array.isArray(blocks)
+      ? blocks.find(block => block !== null && typeof block === 'object' && (block as { type?: unknown }).type === 'text')
+      : undefined
+    const raw = text === undefined ? undefined : (text as { text?: unknown }).text
+    if (typeof raw !== 'string') return null
+    const parsed = JSON.parse(raw) as unknown
+    return parsed !== null && typeof parsed === 'object' ? parsed as Record<string, any> : null
+  } catch {
+    return null
+  }
+}
+
+/** Live bridge sessions, read straight from the bridge (works in proxy mode too). */
+function uiSessions(): Promise<readonly Record<string, any>[]> {
+  return health().then(value => (Array.isArray(value.sessions) ? value.sessions as Record<string, any>[] : []))
+}
+
 async function handleUiStatus(): Promise<unknown> {
   const { bridge } = await uiEngine()
   const connected = await bridge.isPluginConnected()
@@ -417,13 +438,28 @@ async function handleUiStatus(): Promise<unknown> {
   if (connected) {
     try { pluginInfo = await bridge.sendOperation('status', {}) } catch { /* transient disconnect */ }
   }
+  // The responding plugin answers `fileName` for whichever instance took the
+  // call, so the session list — not that field — is what identifies the files.
+  const sessions = connected ? await uiSessions() : []
+  const files = sessions.filter(session => session.connected === true)
   return {
     engine: 'figma-ui-mcp',
     bridgePort: bridge.port || CONFIG.PORT,
     pluginConnected: connected,
     pluginInfo,
+    sessions: files,
+    routing: {
+      connectedCount: files.length,
+      files: files.map(session => ({
+        sessionId: session.id,
+        fileName: typeof session.fileName === 'string' && session.fileName !== 'unknown' ? session.fileName : null,
+      })),
+      hint: files.length > 1
+        ? 'Several Figma files are connected: pass sessionId to figma_read / figma_rules so the read targets the file you mean.'
+        : null,
+    },
     readOnly: true,
-    hint: connected ? 'CONNECTED. Read operations only.' : "Run the 'Figma UI MCP Bridge' plugin in Figma Desktop first.",
+    hint: connected ? 'CONNECTED. Read operations only.' : "Run the 'Figma UI MCP Bridge (Sight)' plugin in Figma Desktop first.",
   }
 }
 
@@ -438,10 +474,23 @@ async function handleFigwrightStatus(repoDir: string | null): Promise<unknown> {
     pluginInfo = null
     pluginConnected = false
   }
+  // figwright routes per plugin session by user activity; lift that out of the
+  // nested payload so the routed file is visible without parsing a JSON string.
+  const payload = payloadOf(pluginInfo)
+  const sessions = payload?.sessions as Record<string, any> | undefined
+  const routing = sessions === undefined ? null : {
+    connectedCount: sessions.connectedCount ?? 0,
+    routedFileName: sessions.routedFileName ?? null,
+    routedPageName: sessions.routedPageName ?? null,
+    files: Array.isArray(sessions.all)
+      ? (sessions.all as Record<string, any>[]).map(session => ({ fileName: session.fileName ?? null, pageName: session.pageName ?? null }))
+      : [],
+  }
   return {
     engine: 'figwright',
     pluginConnected,
     pluginInfo,
+    routing,
     readOnly: true,
     repoDir,
     hint: pluginConnected

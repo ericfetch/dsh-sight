@@ -35,7 +35,7 @@ DeepSeek Harness（DSH）插件：**自动补推理等级** + **Figma MCP 桥接
 
 - 数据来源：Figma Desktop 插件 localhost bridge，提供节点树、选区、CSS、样式、变量、组件、截图与仓库匹配等读取工具；
 - **底层引擎可随时切换**（设置页「Figma MCP → ① 设计稿 → 代码 → 底层引擎」，保存后即时生效、无需重启 DSH）：
-  - `figma-ui-mcp` 原引擎（默认，行为与旧版一致）：Figma 插件「Figma UI MCP Bridge」，模型可见 `figma_status` / `figma_read` / `figma_rules`，保留 get_css / export_svg / scan_design 等读取操作；
+  - `figma-ui-mcp` 原引擎（默认）：Figma 插件「Figma UI MCP Bridge (Sight)」，模型可见 `figma_status` / `figma_read` / `figma_rules` / `figma_files`，保留 get_css / export_svg / scan_design 等读取操作；
   - `figwright` 接地引擎：Figma 插件「Figwright」。在设置页插件安装卡点「一键下载最新版」即可自动下载并解压最新 release（保存在本机配置文件旁，只保留最新一份；网络失败时可点「手动下载（Releases）」兜底），再在 Figma 中 Import plugin from manifest... 选择解压出的 manifest.json 并运行一次。模型可见约 27 个只读工具（`get_design_context` / `component_map` / `token_map` / `icon_map` / `design_diff` / `get_screenshot` 等）。可选填「目标代码目录」，服务器会只读扫描该本机工程，把 Figma 组件/Token/图标匹配到工程已有实现，生成能直接落地、复用既有组件的代码——目录仅本机读取，**不会上传任何代码**；
 - 使用：启用后在 Figma Desktop 运行**当前引擎对应的插件**（两者可同时安装，互不冲突），打开目标文件并选中画板/节点，再对模型说"实现成 React/CSS"即可；
 - 安全边界：此入口无论哪个引擎都只注册只读工具，不能创建、修改、删除或移动画布节点。
@@ -48,7 +48,7 @@ DeepSeek Harness（DSH）插件：**自动补推理等级** + **Figma MCP 桥接
 - **首次安装** Figma 插件（一次性）：
   1. Plugins → Development → Import plugin from manifest...
   2. 选择设置页显示的 manifest.json 路径
-  3. 运行「Figma UI MCP Bridge」插件，看到**绿点**即已连接
+  3. 运行「Figma UI MCP Bridge (Sight)」插件，看到**绿点**即已连接（该副本带多文件路由补丁：同时开多个文件时读写会锁定指定文件，见下方「多文件路由」）
 - 之后每次只需在 Figma 里运行该插件即可，无需重复导入。
 
 启用后，模型通过 `figma_write` / `figma_read` / `figma_status` 等工具在画布上绘制/修改/截图验证。
@@ -117,10 +117,23 @@ dsh plugin --profile desktop update --latest @eric.wen/dsh-sight
 
 ### Figma MCP
 
-1. **设计稿 → 代码**（区块 ①）：设置页选择底层引擎并（可选）填「目标代码目录」→ 启用 → 重启 DSH（首次启用需要）→ 在 Figma Desktop 运行**当前引擎对应的插件**（figma-ui-mcp 引擎跑「Figma UI MCP Bridge」；figwright 引擎跑「Figwright」，均在设置页指引内安装）→ 打开目标文件并选中画板/节点，说"实现"；
-2. **AI 主动设计**（区块 ②）：按区块内指引安装「Figma UI MCP Bridge」→ 启用 → 重启 DSH → 在 Figma 运行该插件 → 回对话描述设计需求。
+1. **设计稿 → 代码**（区块 ①）：设置页选择底层引擎并（可选）填「目标代码目录」→ 启用 → 重启 DSH（首次启用需要）→ 在 Figma Desktop 运行**当前引擎对应的插件**（figma-ui-mcp 引擎跑「Figma UI MCP Bridge (Sight)」；figwright 引擎跑「Figwright」，均在设置页指引内安装）→ 打开目标文件并选中画板/节点，说"实现"；
+2. **AI 主动设计**（区块 ②）：按区块内指引安装「Figma UI MCP Bridge (Sight)」→ 启用 → 重启 DSH → 在 Figma 运行该插件 → 回对话描述设计需求。
 
 > 引擎切换**即时生效**：工具列表会自动刷新，当前对话即可使用新工具；若未刷新，重启 DSH Desktop 即可。① 与 ② 可同时启用；两个 Figma 插件可同时安装、互不冲突（各自只连本机 127.0.0.1 的桥接服务）。
+
+#### 多文件路由（同时开多个 Figma 文件）
+
+「Figma UI MCP Bridge (Sight)」是 DSH 生成的**补丁副本**（设置页有「多文件路由补丁」状态与「重新生成副本」按钮），它让每个 Figma 文件在桥接服务里各自占一条会话（`f:<fileKey>` + 文件名），于是读写可以锁定到指定文件：
+
+- 只开一个文件：自动路由，无感；
+- 同时开多个文件：模型必须先用 `figma_files` 指定目标（`{ use: "<文件名>" }`），**否则读写会直接报错并列出候选文件——绝不猜**（宁可报错也不写错文件）；
+- 指定后写入会锁定该文件；该文件关掉插件/关闭后，DSH 会报错提示重新指定，**不会**改写到另一个打开的文件；
+- 也可以在调用时显式传 `sessionId`（覆盖锁定值）。
+
+> ⚠️ **Figma 导入 dev 插件时会复制文件到它自己的目录**：如果你以前导入过旧版「Figma UI MCP Bridge」，请在插件列表里删掉那一项，再用设置页里的路径**重新导入一次**（现在显示为「Figma UI MCP Bridge (Sight)」，用于区分旧的那份）；没重新导入时仍可用（单文件），但结果里会带一条提醒。
+>
+> 写入端还有一个隐藏的补丁（`figma-ui-mcp` 生成的入口，设置页显示「服务端入口已补丁」）：上游服务在「桥接已被别的进程占用」时会走 HTTP 代理并丢掉 `sessionId`，补丁把它补回来，因此在任何启动顺序下路由都成立。
 
 > 📖 场景化的「怎么对模型说」见下方 **[Figma MCP 使用手册](#figma-mcp-使用手册场景与话术)**。
 
@@ -132,9 +145,11 @@ DSH 把 MCP 工具挂给模型时带命名空间前缀（形如 `mcp__figma-read
 
 | 能力 | 工具面 | 由哪个插件/引擎提供 |
 | --- | --- | --- |
-| ① 设计稿 → 代码（figma-ui-mcp 引擎） | `figma_status` · `figma_read`（get_selection / get_design / get_css / get_design_context / get_component_map / export_svg / scan_design …）· `figma_rules` | Figma UI MCP Bridge |
+| ① 设计稿 → 代码（figma-ui-mcp 引擎） | `figma_status` · `figma_read`（get_selection / get_design / get_css / get_design_context / get_component_map / export_svg / scan_design …）· `figma_rules` · `figma_files` | Figma UI MCP Bridge (Sight) |
 | ① 设计稿 → 代码（figwright 引擎） | `figma_status` + `get_design_context` / `component_map` / `token_map` / `icon_map` / `design_diff` / `get_screenshot` / `analyze_project` 等约 27 个只读工具 | Figwright |
-| ② AI 主动设计 | `figma_status` · `figma_write` · `figma_read` · `figma_docs` · `figma_rules`（可写画布） | Figma UI MCP Bridge |
+| ② AI 主动设计 | `figma_status` · `figma_write` · `figma_read` · `figma_docs` · `figma_rules` · `figma_files`（可写画布） | Figma UI MCP Bridge (Sight) |
+
+`figma_files` 是写入端新增的**路由开关**：列出当前连着桥接服务的 Figma 文件，并锁定本次要操作的那个（同时开多个文件时，不锁定就会直接报错而不是猜）。
 
 **连接自检话术**（任何会话开始时可选）：
 
@@ -171,7 +186,7 @@ DSH 把 MCP 工具挂给模型时带命名空间前缀（形如 `mcp__figma-read
 
 ### 3. ② AI 主动设计：场景与话术
 
-> 前提：设置页 ② 已启用且 Figma 里运行了「Figma UI MCP Bridge」（绿点）。② 与 ① 可同时启用，模型两种工具都有；**只有 ② 能改画布**，想避免任何误写时只启用 ①。
+> 前提：设置页 ② 已启用且 Figma 里运行了「Figma UI MCP Bridge (Sight)」（绿点）。② 与 ① 可同时启用，模型两种工具都有；**只有 ② 能改画布**，想避免任何误写时只启用 ①。
 
 | 场景 | 怎么对模型说（示例） |
 | --- | --- |
@@ -193,8 +208,11 @@ DSH 把 MCP 工具挂给模型时带命名空间前缀（形如 `mcp__figma-read
 
 | 现象 | 处理 |
 | --- | --- |
-| 报 “plugin not connected / Run the … plugin” | ① figma-ui-mcp 引擎跑「Figma UI MCP Bridge」；① figwright 引擎跑「Figwright」；② 跑「Figma UI MCP Bridge」。在 Figma 里运行对应插件后重试即可。 |
+| 报 “plugin not connected / Run the … plugin” | ① figma-ui-mcp 引擎跑「Figma UI MCP Bridge (Sight)」；① figwright 引擎跑「Figwright」；② 跑「Figma UI MCP Bridge (Sight)」。在 Figma 里运行对应插件后重试即可。 |
 | 想让模型改画布，但它说没有写工具/工具被拒 | ① 是严格只读的；去设置页启用 ②（并重启 DSH 生效），② 才有 `figma_write`。 |
+| 报「多个 Figma 文件已连接」/ 写入报错说没锁定目标 | 同时开了多个文件：让模型先 `figma_files` 指定（`{ use: "<文件名>" }`），或直接说“写到 XXX 文件”。这是故意的保护——宁可不写，也不写错文件。 |
+| 结果里出现 “does not carry the per-file session patch” | 当前 Figma 里跑的还是旧插件（导入后没更新）。删掉插件列表里旧的那一项，用设置页路径重新导入「Figma UI MCP Bridge (Sight)」。旧插件下只在“只开一个文件”时可靠。 |
+| 设置页显示「未打多文件路由补丁」 | 点「重新生成副本」；若仍失败，看提示里的原因（通常是 `figma-ui-mcp` 升级后结构变了），此时回退为单文件模式仍可用。 |
 | 两个引擎/①+② 同时开，工具很多 | 属正常现象：模型按指令选用。想收窄就只开当前任务需要的那个。 |
 | 大画板转码内容超长/丢失细节 | 一次只转一个画板；页面太大让模型“先 scan_design 分节/分区块逐个读”。 |
 | 切换引擎后工具名变了 | 工具列表会自动刷新（当前对话下一轮即可用）；若没刷新，重启 DSH。切换后建议新开指令重新描述任务。 |

@@ -11,6 +11,7 @@
  * - `figmaMcpRemove`  -> remove one Figma MCP row
  * - `repoDirList`     -> host-side directory listing for the figwright repo picker
  * - `figwrightPluginUpdate` -> refresh the locally extracted Figwright plugin
+ * - `bridgePluginUpdate`    -> rebuild the patched Figma UI MCP Bridge plugin copy
  * @module dsh-sight
  */
 
@@ -25,11 +26,16 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import * as figwrightInstall from './figma-plugin-install.ts'
+import * as bridgePluginInstall from './figma-bridge-plugin.ts'
+import * as bridgeServerInstall from './figma-ui-server-patch.ts'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
   SIGHT_RPC,
   SIGHT_RPC_CHANNEL,
   type SightApplyReasoningResult,
+  type SightBridgePluginInfo,
+  type SightBridgePluginUpdateResult,
+  type SightBridgeServerInfo,
   type SightDirListing,
   type SightFigmaMcpApplyRequest,
   type SightFigmaMcpRemoveRequest,
@@ -58,27 +64,40 @@ const DEEPSEEK_PROVIDER = 'deepseek-official'
 const FIGMA_MCP_PLUGIN = '@deepseek-ai/dsh-mcp-client'
 
 /**
- * Resolve the entry script of a Figma MCP server. Both packages ship as
- * dependencies of dsh-sight and stay external in the build so the standalone
- * entry files exist on disk for the mcp-client child processes to spawn.
- * - `figma-read-server`: localhost bridge facade (read-only design-to-code,
- *   dual engine: figma-ui-mcp bridge + figwright child, switched at runtime).
- * - `figma-ui-mcp`: localhost plugin bridge (AI-driven design, read/write).
+ * Resolve the installed `figma-ui-mcp` package: the plugin directory whose
+ * manifest the settings page points at, the server directory the patched entry
+ * is generated from, plus its version. The package ships as a dependency and
+ * stays external in the build, so the child process this facade spawns has a
+ * real entry file on disk.
  */
-const figmaServerBin = (pkg: string, rel: readonly string[]): string => {
+const figmaUiPackage = (): { readonly pluginDir: string; readonly serverDir: string; readonly version: string } | null => {
   try {
     const require = createRequire(import.meta.url)
-    const resolved = require.resolve(`${pkg}/package.json`)
-    return join(dirname(resolved), ...rel)
+    const resolved = require.resolve('figma-ui-mcp/package.json')
+    const root = dirname(resolved)
+    const pluginDir = join(root, 'plugin')
+    const serverDir = join(root, 'server')
+    if (!existsSync(join(pluginDir, 'manifest.json'))) return null
+    if (!existsSync(join(serverDir, 'index.js'))) return null
+    let version = 'unknown'
+    try {
+      const pkg = JSON.parse(readFileSync(resolved, 'utf8')) as { version?: unknown }
+      if (typeof pkg.version === 'string' && pkg.version.length > 0) version = pkg.version
+    } catch { /* keep 'unknown' — the copy is rebuilt whenever the stamp differs */ }
+    return { pluginDir, serverDir, version }
   } catch {
-    return join(homedir(), 'AppData', 'Local', 'Temp', 'figma-ui-mcp-test', 'node_modules', pkg, ...rel)
+    return null
   }
 }
 
 /** Read-only localhost plugin MCP server entry (design-to-code). */
 const FIGMA_READ_BIN = join(dirname(fileURLToPath(import.meta.url)), 'figma-read-server.js')
-/** Write-capable localhost plugin bridge server entry. */
-const FIGMA_WRITE_BIN = figmaServerBin('figma-ui-mcp', ['server', 'index.js'])
+/**
+ * Write-capable localhost plugin bridge entry: this package's own facade over
+ * the `figma-ui-mcp` server, which pins every read/write call to one Figma file
+ * instead of letting the bridge pick "whichever plugin polled last".
+ */
+const FIGMA_WRITE_BIN = join(dirname(fileURLToPath(import.meta.url)), 'figma-ui-server.js')
 
 /**
  * Reasoning-effort dictionary. Keys are the pi-ai canonical thinking levels a
@@ -542,16 +561,46 @@ export function apply(ctx: Context): void {
       return { configured: true, hasToken }
     }
 
-    /** Resolve the Figma plugin manifest path for the write bridge (unconditional — the package ships as a dep). */
-    const figmaManifestPath = (): string | null => {
-      try {
-        const require = createRequire(import.meta.url)
-        const resolved = require.resolve('figma-ui-mcp/package.json')
-        const candidate = join(dirname(resolved), 'plugin', 'manifest.json')
-        return existsSync(candidate) ? candidate : null
-      } catch {
-        return null
+    /**
+     * App-managed Figma UI MCP Bridge plugin copy, carrying the per-file
+     * session patch. Rebuilt from the installed package whenever the upstream
+     * version or the patch revision moved, so opening the settings page is
+     * always enough to get a current copy to import.
+     */
+    const bridgePluginDir = (): string => bridgePluginInstall.bridgePluginDir(dirname(patchPath()))
+
+    const bridgePluginState = (): SightBridgePluginInfo => {
+      const upstream = figmaUiPackage()
+      if (upstream === null) {
+        return { patched: false, upstreamVersion: null, manifestPath: null, error: '未找到 figma-ui-mcp 依赖' }
       }
+      return bridgePluginInstall.ensureBridgePlugin(bridgePluginDir(), upstream.pluginDir, upstream.version)
+    }
+
+    /** Upstream plugin manifest — the fallback when the patch cannot be applied. */
+    const upstreamManifestPath = (): string | null => {
+      const upstream = figmaUiPackage()
+      return upstream === null ? null : join(upstream.pluginDir, 'manifest.json')
+    }
+
+    /**
+     * Generated figma-ui-mcp entry. The write facade regenerates it on every
+     * start, so this is only what the settings page reports.
+     */
+    const bridgeServerDir = (): string => bridgeServerInstall.bridgeServerDir(dirname(patchPath()))
+
+    const bridgeServerState = (): SightBridgeServerInfo => {
+      const upstream = figmaUiPackage()
+      if (upstream === null) return { patched: false, entryPath: null, error: '未找到 figma-ui-mcp 依赖' }
+      return bridgeServerInstall.ensureBridgeServer(bridgeServerDir(), upstream.serverDir, upstream.version)
+    }
+
+    /** Force a rebuild of both patched assets (the settings page's "重新生成" action). */
+    const bridgePluginRefresh = (): SightBridgePluginUpdateResult => {
+      try { rmSync(bridgePluginDir(), { recursive: true, force: true }) } catch { /* best effort */ }
+      try { rmSync(bridgeServerDir(), { recursive: true, force: true }) } catch { /* best effort */ }
+      const state = bridgePluginState()
+      return { ok: state.patched, ...state, bridgeServer: bridgeServerState() }
     }
 
     // Read-mode engine choice lives in a small state file next to the patch,
@@ -592,6 +641,18 @@ export function apply(ctx: Context): void {
     /** Drop the read-mode engine state (used when the read row is removed). */
     const clearSightReadState = (): void => {
       try { rmSync(sightReadStatePath(), { force: true }) } catch { /* best effort */ }
+    }
+
+    // Which Figma file the write facade targets. With one file connected the
+    // facade auto-selects; with several it refuses to guess unless a target is
+    // pinned here (the `figma_files` tool writes this file through the env the
+    // write row carries).
+
+    const sightUiStatePath = (): string => join(dirname(patchPath()), 'sight-figma-ui.json')
+
+    /** Drop the pinned write target (used when the write row is removed). */
+    const clearSightUiState = (): void => {
+      try { rmSync(sightUiStatePath(), { force: true }) } catch { /* best effort */ }
     }
 
     /** Validate the grounding directory a user picked for the figwright engine. */
@@ -652,20 +713,24 @@ export function apply(ctx: Context): void {
         // The manifest path is available regardless of whether the write row is
         // configured (the package ships as a dependency), so the UI guides the
         // user to import it BEFORE enabling.
-        const manifest = figmaManifestPath()
+        const bridge = bridgePluginState()
+        const bridgeServer = bridgeServerState()
+        const manifest = bridge.manifestPath ?? upstreamManifestPath()
         const read = rowStatus(findFigmaRow(patch, 'read'))
         const write = rowStatus(findFigmaRow(patch, 'write'))
         const readEngine = readSightReadState()
         return {
-          // figma-ui-mcp: the manifest is the shared dep's plugin (also used by
-          // the write row). figwright: the plugin ships via GitHub release zip,
-          // so there is no local manifest to point at.
+          // figma-ui-mcp: the manifest is the patched copy of the shared dep's
+          // plugin (also used by the write row). figwright: the plugin ships via
+          // GitHub release zip, so there is no local manifest to point at.
           read: {
             ...read,
             backend: readEngine.backend,
             repoDir: readEngine.repoDir,
             manifestPath: readEngine.backend === 'figma-ui-mcp' ? manifest : null,
             figwrightPlugin: figwrightPluginState(),
+            bridgePlugin: bridge,
+            bridgeServer,
           },
           write: {
             ...write,
@@ -673,15 +738,19 @@ export function apply(ctx: Context): void {
             repoDir: null,
             manifestPath: manifest,
             figwrightPlugin: { installedTag: null, manifestPath: null },
+            bridgePlugin: bridge,
+            bridgeServer,
           },
           patchPath: file,
           profile: activeProfile(),
           error: null,
         }
       } catch (error) {
+        const none: SightBridgePluginInfo = { patched: false, upstreamVersion: null, manifestPath: null, error: null }
+        const noneServer: SightBridgeServerInfo = { patched: false, entryPath: null, error: null }
         return {
-          read: { configured: false, hasToken: false, manifestPath: null, backend: 'figma-ui-mcp', repoDir: null, figwrightPlugin: { installedTag: null, manifestPath: null } },
-          write: { configured: false, hasToken: false, manifestPath: null, backend: 'figma-ui-mcp', repoDir: null, figwrightPlugin: { installedTag: null, manifestPath: null } },
+          read: { configured: false, hasToken: false, manifestPath: null, backend: 'figma-ui-mcp', repoDir: null, figwrightPlugin: { installedTag: null, manifestPath: null }, bridgePlugin: none, bridgeServer: noneServer },
+          write: { configured: false, hasToken: false, manifestPath: null, backend: 'figma-ui-mcp', repoDir: null, figwrightPlugin: { installedTag: null, manifestPath: null }, bridgePlugin: none, bridgeServer: noneServer },
           patchPath: file,
           profile: activeProfile(),
           error: error instanceof Error ? error.message : String(error),
@@ -753,6 +822,9 @@ export function apply(ctx: Context): void {
           serverName: 'figma-ui',
           command: 'node',
           args: [FIGMA_WRITE_BIN],
+          // The facade pins each read/write to one Figma file; the pinned
+          // session id lives in this state file (figma_files writes it).
+          env: { SIGHT_UI_STATE: sightUiStatePath() },
         },
       }
       try {
@@ -785,6 +857,7 @@ export function apply(ctx: Context): void {
         }
         writePatch(patch)
         if (mode === 'read') clearSightReadState()
+        else clearSightUiState()
         return { ok: true, patchPath: patchPath(), error: null }
       } catch (error) {
         return { ok: false, patchPath: patchPath(), error: error instanceof Error ? error.message : String(error) }
@@ -815,6 +888,8 @@ export function apply(ctx: Context): void {
           }
           case SIGHT_RPC.figwrightPluginUpdate:
             return ok(await figwrightPluginUpdate())
+          case SIGHT_RPC.bridgePluginUpdate:
+            return ok(bridgePluginRefresh())
           default:
             return fail(`unknown dsh-sight endpoint "${String(endpoint)}"`)
         }
