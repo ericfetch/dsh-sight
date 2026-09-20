@@ -2,3 +2,7 @@ node_modules/
 *.tsbuildinfo
 .tmp*
 .pnpm-store/
+
+# 本地实验：把 dsh-sight 的 Figma 桥转成 ZCode 插件的侧项目（未纳入版本管理，
+# 保留在磁盘上；以后想跟踪就把这一行删掉，或只忽略它的 node_modules）
+zcode-plugin/
