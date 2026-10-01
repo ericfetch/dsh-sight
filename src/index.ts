@@ -111,10 +111,46 @@ const FIGMA_WRITE_BIN = join(dirname(fileURLToPath(import.meta.url)), 'figma-ui-
  * hand-editing settings.
  *
  * `off: null` is the one level that may leave its wire value empty - pi-ai
- * reads it as "supported, send nothing" (thinking left to the provider).
+ * reads it as "supported, send nothing" (thinking left to the provider). An
+ * omitted level is unsupported, so a family whose thinking cannot be turned
+ * off (Claude Opus 5 / Fable 5) simply omits `off`.
+ *
+ * `api` restricts an entry to the wire protocols whose spellings it uses, so a
+ * Claude preset never lands on an OpenAI-compatible relay of the same model id
+ * (and vice versa). `compat` is merged into the model's `compat` block: Claude
+ * adaptive-thinking models need `forceAdaptiveThinking` for the level to reach
+ * the wire as `output_config.effort` instead of a token budget. Claude levels
+ * are transcribed from the installed pi-ai catalog's `thinkingLevelMap`.
  */
-const REASONING_DICTIONARY: readonly { readonly re: RegExp; readonly family: string; readonly efforts: Readonly<Record<string, string | null>> }[] = [
-  { re: /^gpt-5/, family: 'OpenAI GPT-5', efforts: { off: null, high: 'high', xhigh: 'xhigh', max: 'max' } },
+const ANTHROPIC_API = ['anthropic-messages'] as const
+const OPENAI_STYLE_API = ['openai-completions', 'openai-responses'] as const
+const ADAPTIVE = { forceAdaptiveThinking: true } as const
+const ADAPTIVE_NO_TEMPERATURE = { forceAdaptiveThinking: true, supportsTemperature: false } as const
+const ADAPTIVE_LEVELS = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' } as const
+
+interface ReasoningPreset {
+  readonly re: RegExp
+  readonly family: string
+  readonly efforts: Readonly<Record<string, string | null>>
+  /** Wire protocols this preset's spellings belong to; absent = any. */
+  readonly api?: readonly string[]
+  /** Compat flags merged into the model's `compat` block alongside the efforts. */
+  readonly compat?: Readonly<Record<string, boolean>>
+}
+
+const REASONING_DICTIONARY: readonly ReasoningPreset[] = [
+  // Anthropic: adaptive thinking (the level is sent as `effort`).
+  { re: /^claude-opus-5/, family: 'Claude Opus 5', api: ANTHROPIC_API, efforts: ADAPTIVE_LEVELS, compat: ADAPTIVE_NO_TEMPERATURE },
+  { re: /^claude-fable-5/, family: 'Claude Fable 5', api: ANTHROPIC_API, efforts: ADAPTIVE_LEVELS, compat: ADAPTIVE },
+  { re: /^claude-sonnet-5/, family: 'Claude Sonnet 5', api: ANTHROPIC_API, efforts: { off: null, ...ADAPTIVE_LEVELS }, compat: ADAPTIVE },
+  { re: /^claude-opus-4-[78]/, family: 'Claude Opus 4.7/4.8', api: ANTHROPIC_API, efforts: { off: null, ...ADAPTIVE_LEVELS }, compat: ADAPTIVE_NO_TEMPERATURE },
+  { re: /^claude-(opus|sonnet)-4-6/, family: 'Claude 4.6', api: ANTHROPIC_API, efforts: { off: null, low: 'low', medium: 'medium', high: 'high', max: 'max' }, compat: ADAPTIVE },
+  // Anthropic: budget-based thinking (the level picks a token budget).
+  { re: /^claude-(opus|sonnet|haiku)-4|^claude-3-7-sonnet/, family: 'Claude 4.x / 3.7', api: ANTHROPIC_API, efforts: { off: null, low: 'low', medium: 'medium', high: 'high' } },
+  // OpenAI GPT-5 line: levels differ per minor version (pi-ai catalog).
+  { re: /^gpt-5\.[2-6]/, family: 'OpenAI GPT-5.2+', api: OPENAI_STYLE_API, efforts: { off: 'none', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh' } },
+  { re: /^gpt-5\.1/, family: 'OpenAI GPT-5.1', api: OPENAI_STYLE_API, efforts: { off: 'none', low: 'low', medium: 'medium', high: 'high' } },
+  { re: /^gpt-5/, family: 'OpenAI GPT-5', api: OPENAI_STYLE_API, efforts: { minimal: 'minimal', low: 'low', medium: 'medium', high: 'high' } },
   { re: /^o3/, family: 'OpenAI o-series', efforts: { off: null, low: 'low', medium: 'medium', high: 'high' } },
   { re: /^o4/, family: 'OpenAI o-series', efforts: { off: null, low: 'low', medium: 'medium', high: 'high' } },
   { re: /^grok-4/, family: 'xAI Grok 4.x', efforts: { off: null, low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh' } },
@@ -125,11 +161,17 @@ const REASONING_DICTIONARY: readonly { readonly re: RegExp; readonly family: str
   { re: /^minimax/, family: 'MiniMax', efforts: { off: null, high: 'high' } },
 ]
 
-/** First reasoning-dictionary family matching a model id, or undefined. */
-function reasoningFamilyOf(modelId: string): typeof REASONING_DICTIONARY[number] | undefined {
+/**
+ * First reasoning-dictionary family matching a model id on a route speaking
+ * `api`. An unknown api (catalog route without an explicit `api`) does not
+ * exclude a preset; a known mismatching api does.
+ */
+function reasoningFamilyOf(modelId: string, api?: string): ReasoningPreset | undefined {
   const id = modelId.toLowerCase()
   for (const entry of REASONING_DICTIONARY) {
-    if (entry.re.test(id)) return entry
+    if (!entry.re.test(id)) continue
+    if (api !== undefined && entry.api !== undefined && !entry.api.includes(api)) continue
+    return entry
   }
   return undefined
 }
@@ -137,6 +179,7 @@ function reasoningFamilyOf(modelId: string): typeof REASONING_DICTIONARY[number]
 /** Loose raw pi-ai profile shape read from the stored settings layer. */
 interface RawProfile {
   readonly displayName?: string
+  readonly api?: string
   readonly models?: readonly RawModel[]
   readonly modelOverrides?: Readonly<Record<string, RawModel | undefined>>
 }
@@ -144,6 +187,7 @@ interface RawModel {
   readonly id: string
   readonly name?: string
   readonly reasoningEfforts?: Readonly<Record<string, string | null>> | false
+  readonly compat?: Readonly<Record<string, unknown>>
 }
 interface RawSection {
   readonly providers?: Readonly<Record<string, RawProfile | undefined>>
@@ -279,17 +323,16 @@ export function apply(ctx: Context): void {
       }
     }
 
-    /** Whether the raw profile already declares a reasoning-effort map for one model. */
-    const rawDeclaresReasoning = (profile: RawProfile | undefined, model: string): boolean => {
-      if (profile === undefined) return false
-      if (Array.isArray(profile.models)) {
-        const entry = profile.models.find(m => m !== null && typeof m === 'object' && m.id === model)
-        const efforts = entry?.reasoningEfforts
-        return efforts !== undefined && efforts !== false && efforts !== null
+    /** Wire protocol of a route: the stored `api`, else the resolved one, else undefined. */
+    const routeApi = (provider: string, raw: RawProfile | undefined): string | undefined => {
+      if (typeof raw?.api === 'string') return raw.api
+      try {
+        const section = settings.get(NS) as { providers?: Readonly<Record<string, RawProfile | undefined>> } | undefined
+        const api = section?.providers?.[provider]?.api
+        return typeof api === 'string' ? api : undefined
+      } catch {
+        return undefined
       }
-      const override = profile.modelOverrides?.[model]
-      const efforts = override?.reasoningEfforts
-      return efforts !== undefined && efforts !== false && efforts !== null
     }
 
     /** Full overview for the settings page. */
@@ -410,27 +453,30 @@ export function apply(ctx: Context): void {
       const changes: SightReasoningChange[] = []
       for (const [provider, profile] of Object.entries(rawProviders)) {
         if (profile === undefined || typeof profile !== 'object') continue
+        const api = routeApi(provider, profile)
         const rawModels = Array.isArray(profile.models) ? profile.models : undefined
         if (rawModels !== undefined) {
-          let changed = false
+          let changedCount = 0
           const next = rawModels.map((m): unknown => {
             if (m === null || typeof m !== 'object' || typeof m.id !== 'string') return m
-            if (rawDeclaresReasoning(profile, m.id)) return m
-            const match = reasoningFamilyOf(m.id)
+            // `false` (explicitly non-reasoning) and any declared map are left alone.
+            if (m.reasoningEfforts !== undefined) return m
+            const match = reasoningFamilyOf(m.id, api)
             if (match === undefined) return m
-            changed = true
+            changedCount += 1
             changes.push({
               provider,
               model: m.id,
               family: match.family,
               efforts: Object.entries(match.efforts).map(([level, wire]) => ({ level, wire: wire ?? '' })),
             })
-            return { ...m, reasoningEfforts: { ...match.efforts } }
+            return match.compat === undefined
+              ? { ...m, reasoningEfforts: { ...match.efforts } }
+              : { ...m, reasoningEfforts: { ...match.efforts }, compat: { ...m.compat, ...match.compat } }
           })
-          if (changed) {
+          if (changedCount > 0) {
             await settings.mutate(NS, [{ op: 'set', path: ['providers', provider, 'models'], value: next }])
-            applied += next.filter(m => m !== null && typeof m === 'object'
-              && (m as RawModel).reasoningEfforts !== undefined && (m as RawModel).reasoningEfforts !== false).length
+            applied += changedCount
             touchedProviders += 1
           }
           continue
@@ -439,8 +485,8 @@ export function apply(ctx: Context): void {
         try {
           const models = await llm.listModels(provider)
           for (const m of models) {
-            if (rawDeclaresReasoning(profile, m.id)) continue
-            const match = reasoningFamilyOf(m.id)
+            if (profile.modelOverrides?.[m.id]?.reasoningEfforts !== undefined) continue
+            const match = reasoningFamilyOf(m.id, api)
             if (match === undefined) continue
             try {
               const info = await llm.resolveModelInfo(provider, m.id)
@@ -453,6 +499,9 @@ export function apply(ctx: Context): void {
               path: ['providers', provider, 'modelOverrides', m.id, 'reasoningEfforts'],
               value: { ...match.efforts },
             })
+            for (const [key, value] of Object.entries(match.compat ?? {})) {
+              ops.push({ op: 'set', path: ['providers', provider, 'modelOverrides', m.id, 'compat', key], value })
+            }
             applied += 1
             changes.push({
               provider,

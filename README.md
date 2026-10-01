@@ -12,7 +12,13 @@ DeepSeek Harness（DSH）插件：**自动补推理等级** + **Figma MCP 桥接
 
 | 模型家族 | 写入档位（reasoningEfforts） |
 | --- | --- |
-| GPT-5.x | off / high / xhigh / max |
+| Claude Opus 5 / Fable 5 | low / medium / high / xhigh / max（不可关闭思考） |
+| Claude Sonnet 5、Opus 4.7/4.8 | off / low / medium / high / xhigh / max |
+| Claude Opus/Sonnet 4.6 | off / low / medium / high / max |
+| Claude 4.x 其余、Sonnet 3.7 | off / low / medium / high（按 token 预算） |
+| GPT-5.2+ | off(none) / low / medium / high / xhigh |
+| GPT-5.1 | off(none) / low / medium / high |
+| GPT-5 / mini / nano | minimal / low / medium / high |
 | o3 / o4 | off / low / medium / high |
 | Grok 4.x | off / low / medium / high / xhigh |
 | DeepSeek V4 | off / high / max |
@@ -21,7 +27,9 @@ DeepSeek Harness（DSH）插件：**自动补推理等级** + **Figma MCP 桥接
 | Qwen 3 | off / low / medium / high |
 | MiniMax | off / high |
 
-- 只补**未声明**的模型，已有档位或目录自带推理能力的模型一律不动；
+- 只补**未声明**的模型，已有档位（含 `reasoningEfforts: false`）或目录自带推理能力的模型一律不动；
+- 预设按渠道协议生效：Claude 档位只写入 `api: anthropic-messages` 渠道，GPT-5 档位只写入 `openai-completions` / `openai-responses` 渠道，同名模型挂在别的协议中转上不会误写；
+- Claude 自适应思考机型（Opus/Fable/Sonnet 5、Opus 4.6+）同时写入 `compat.forceAdaptiveThinking: true`，档位以 `output_config.effort` 发送；Opus 4.7+/5 另写 `supportsTemperature: false`。已有的其他 compat 键保留。Claude/GPT 档位取自 pi-ai 内置目录的 `thinkingLevelMap`；
 - 档位值跟随各家族官方 API 文档（DeepSeek off/high/max、Grok 4.x low/medium/high/xhigh、GLM-5.2 high/xhigh/max、Kimi K3 low/high/max）；
 - 写入 `llm-pi-ai` 配置的 `reasoningEfforts`，下次请求即生效。
 
