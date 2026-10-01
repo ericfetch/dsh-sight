@@ -1,6 +1,6 @@
 {
   "name": "@eric.wen/dsh-sight",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "DeepSeek Harness plugin: reasoning-effort auto-fill declarations and progressive Figma MCP bridging (design-to-code + AI-driven design).",
   "license": "MIT",
   "type": "module",
