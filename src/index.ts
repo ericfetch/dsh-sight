@@ -16,9 +16,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { ConnectionRpcHandler, HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
-import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
-import type { SettingsPathOp } from '@deepseek-ai/dsh-settings'
+import type { ConnectionRpcHandler, ConnectionRpcResult, HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
+import type { SettingsDescriptor, SettingsPathOp } from '@deepseek-ai/dsh-settings'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
@@ -193,12 +192,13 @@ interface RawSection {
   readonly providers?: Readonly<Record<string, RawProfile | undefined>>
 }
 
-/** Host service surfaces narrowed through the plugin ctx. */
-interface SettingsServiceLike {
-  describe(): readonly { ns: string; user?: unknown }[]
-  get(ns: string): unknown
-  mutate(ns: string, ops: readonly SettingsPathOp[]): Promise<void>
-}
+/**
+ * Host service surfaces narrowed through the plugin ctx. The `settings` service
+ * is deliberately NOT declared here: it is used through its own package type
+ * (`SettingsForms`), because a hand-written interface once declared a
+ * `get(ns)` that DSH 0.2 dropped — that compiled clean and only surfaced as an
+ * `internal:` RPC error on the settings page.
+ */
 interface LlmServiceLike {
   listModels(provider: string): Promise<readonly { id: string; name: string }[]>
   resolveModelInfo(provider: string, model: string): Promise<{
@@ -207,11 +207,11 @@ interface LlmServiceLike {
 }
 
 /** RPC success arm. */
-function ok(value: unknown): RpcResult<unknown> {
+function ok(value: unknown): ConnectionRpcResult<unknown> {
   return { ok: true, value }
 }
 /** RPC failure arm. */
-function fail(message: string): RpcResult<unknown> {
+function fail(message: string): ConnectionRpcResult<unknown> {
   return { ok: false, error: { code: 'internal', message, details: {} } }
 }
 
@@ -309,30 +309,61 @@ function writeSightJson(res: ServerResponse, body: unknown): void {
 export function apply(ctx: Context): void {
   ctx.inject(['connection', 'settings', 'llm'], (sightCtx) => {
     const connection = sightCtx.get('connection') as unknown as HostConnectionHandle
-    const settings = sightCtx.get('settings') as unknown as SettingsServiceLike
+    // Injected above, so the service is present; the property access carries the
+    // real `SettingsForms` type instead of a local shape that could drift.
+    const settings = sightCtx.settings
+    void (settings as unknown as { get(ns: string): unknown })
     const llm = sightCtx.get('llm') as unknown as LlmServiceLike
+
+    /**
+     * Live descriptor of one settings namespace, or undefined when the running
+     * composition carries no such entry. Intentionally uncaught: a settings read
+     * that fails must surface on the page instead of reading as "no providers".
+     */
+    const descriptorOf = (ns: string): SettingsDescriptor | undefined =>
+      settings.describe().find(descriptor => descriptor.ns === ns)
+
+    /** Provider map of one resolved settings value (`llm-pi-ai` shape), or undefined. */
+    const providersOf = (value: unknown): Readonly<Record<string, RawProfile | undefined>> | undefined => {
+      if (value === null || typeof value !== 'object') return undefined
+      const providers = (value as { providers?: unknown }).providers
+      return providers !== null && typeof providers === 'object'
+        ? providers as Readonly<Record<string, RawProfile | undefined>>
+        : undefined
+    }
 
     /** Raw (stored) user section of the llm-pi-ai namespace, or undefined. */
     const rawSection = (): RawSection | undefined => {
       try {
-        const descriptor = settings.describe().find(d => d.ns === NS)
-        const user = descriptor?.user
+        const user = descriptorOf(NS)?.user
         return user !== null && typeof user === 'object' ? user as RawSection : undefined
       } catch {
         return undefined
       }
     }
 
-    /** Wire protocol of a route: the stored `api`, else the resolved one, else undefined. */
-    const routeApi = (provider: string, raw: RawProfile | undefined): string | undefined => {
-      if (typeof raw?.api === 'string') return raw.api
+    /** Effective (base + user) provider map of the pi-ai namespace, or undefined when unreadable. */
+    const effectiveProviders = (): Readonly<Record<string, RawProfile | undefined>> | undefined => {
       try {
-        const section = settings.get(NS) as { providers?: Readonly<Record<string, RawProfile | undefined>> } | undefined
-        const api = section?.providers?.[provider]?.api
-        return typeof api === 'string' ? api : undefined
+        return providersOf(descriptorOf(NS)?.value)
       } catch {
         return undefined
       }
+    }
+
+    /**
+     * Wire protocol of a route: the stored `api`, else the resolved one, else
+     * undefined. The resolved map is read once by the caller so a settings read
+     * is never repeated per provider.
+     */
+    const routeApi = (
+      provider: string,
+      raw: RawProfile | undefined,
+      effective: Readonly<Record<string, RawProfile | undefined>> | undefined,
+    ): string | undefined => {
+      if (typeof raw?.api === 'string') return raw.api
+      const api = effective?.[provider]?.api
+      return typeof api === 'string' ? api : undefined
     }
 
     /** Full overview for the settings page. */
@@ -344,9 +375,9 @@ export function apply(ctx: Context): void {
         efforts: Object.entries(entry.efforts).map(([level, wire]) => ({ level, wire: wire ?? '' })),
       }))
       const providers: SightProviderEntry[] = []
-      const section = settings.get(NS) as { providers?: Readonly<Record<string, RawProfile | undefined>> } | undefined
-      const configured = section?.providers
-      if (configured !== undefined && typeof configured === 'object') {
+      // The configured provider set is the *effective* config (base + user).
+      const configured = providersOf(descriptorOf(NS)?.value)
+      if (configured !== undefined) {
         for (const [provider, profile] of Object.entries(configured)) {
           const models: SightModelEntry[] = []
           let error: string | null = null
@@ -396,8 +427,12 @@ export function apply(ctx: Context): void {
       // it as its own group so its configured models and reasoning levels appear
       // on the settings page.
       try {
-        const deepseekSection = settings.get(DEEPSEEK_NS) as { models?: readonly RawModel[] } | undefined
-        const deepseekModels = Array.isArray(deepseekSection?.models) ? deepseekSection.models : []
+        const deepseekValue = descriptorOf(DEEPSEEK_NS)?.value
+        const deepseekModels = ((): readonly RawModel[] => {
+          if (deepseekValue === null || typeof deepseekValue !== 'object') return []
+          const models = (deepseekValue as { models?: unknown }).models
+          return Array.isArray(models) ? models as readonly RawModel[] : []
+        })()
         if (deepseekModels.length > 0) {
           const models: SightModelEntry[] = await Promise.all(deepseekModels.map(async (dm): Promise<SightModelEntry> => {
             const id = typeof dm?.id === 'string' ? dm.id : ''
@@ -451,9 +486,12 @@ export function apply(ctx: Context): void {
       let applied = 0
       let touchedProviders = 0
       const changes: SightReasoningChange[] = []
+      // One resolved read for the whole pass: `routeApi` falls back to the
+      // effective `api` for providers whose protocol is inherited, not stored.
+      const effective = effectiveProviders()
       for (const [provider, profile] of Object.entries(rawProviders)) {
         if (profile === undefined || typeof profile !== 'object') continue
-        const api = routeApi(provider, profile)
+        const api = routeApi(provider, profile, effective)
         const rawModels = Array.isArray(profile.models) ? profile.models : undefined
         if (rawModels !== undefined) {
           let changedCount = 0
@@ -1004,7 +1042,7 @@ export function apply(ctx: Context): void {
             writeSightJson(res, {
               type: 'server-response',
               rpcId,
-              result: await handler(endpoint, envelope.payload, SIGHT_NEVER_ABORTED),
+              result: await handler(endpoint, envelope.payload, SIGHT_NEVER_ABORTED, connection.operator),
             })
           } catch (error) {
             res.writeHead(500)

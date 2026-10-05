@@ -8,8 +8,9 @@
 
 import React from 'react'
 import type { CSSProperties, ReactElement, ReactNode } from 'react'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context } from '@deepseek-ai/cordis'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import {
   SIGHT_RPC,
@@ -33,7 +34,7 @@ import {
 export const inject = ['slots', 'connection']
 
 /** Module-level client context captured by `apply`, used by the React views. */
-let clientCtx: ClientContext
+let clientCtx: Context
 
 type RpcResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } }
 
@@ -665,7 +666,7 @@ function FigmaMcpPage(): ReactElement {
 }
 
 /** Mount the Sight browser surfaces. */
-export function apply(ctx: ClientContext): void {
+export function apply(ctx: Context): void {
   clientCtx = ctx
 
   ctx.slots.inject('settings.section', () => ctx.slots.register(
