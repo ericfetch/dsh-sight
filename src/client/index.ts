@@ -245,15 +245,24 @@ function ModelRow(props: {
     { style: ROW },
     // A basis wide enough to keep the id on one line; the chips wrap to the
     // next line instead of squeezing it into a vertical stack.
-    React.createElement('div', { style: { flex: '1 1 220px', minWidth: 0 } },
+    React.createElement('div', { style: { flex: '1 1 200px', minWidth: 0 } },
       React.createElement('div', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: model.id }, model.id),
       React.createElement('div', { style: { fontSize: 11, opacity: 0.6 } }, model.name),
     ),
-    imageChip,
-    probeChip,
-    reasoningChip,
-    probeButton,
-    clearButton,
+    // Chips are the flexible middle: they may wrap among themselves, and they
+    // give up width first.
+    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: '0 1 auto' } },
+      imageChip,
+      probeChip,
+      reasoningChip,
+    ),
+    // Actions are one indivisible, right-aligned group. Left to wrap
+    // individually they split across lines at arbitrary points, which reads as a
+    // broken row rather than a deliberate one.
+    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto', flex: '0 0 auto' } },
+      probeButton,
+      clearButton,
+    ),
   )
   if (probe === null) return row
   // The evidence is prose of unknown length, so it gets its own full-width line
