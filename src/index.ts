@@ -27,7 +27,17 @@ import { fileURLToPath } from 'node:url'
 import * as figwrightInstall from './figma-plugin-install.ts'
 import * as bridgePluginInstall from './figma-bridge-plugin.ts'
 import * as bridgeServerInstall from './figma-ui-server-patch.ts'
-import { decideReasoningFill, describePiAiModelReasoning, reasoningDictionaryEntries, reasoningFamilyOf } from './reasoning-dictionary.ts'
+import { reasoningDictionaryEntries, reasoningFamilyOf, decideReasoningFill, describePiAiModelReasoning } from './reasoning-dictionary.ts'
+import {
+  classifyDeclarationNotApplied,
+  classifyImageProbeFailure,
+  classifyImageProbeSuccess,
+  classifyImageProbeUnsendable,
+  PROBE_IMAGE_MEDIA_TYPE,
+  PROBE_IMAGE_PNG_BASE64,
+  PROBE_MAX_TOKENS,
+  PROBE_PROMPT_TEXT,
+} from './image-probe.ts'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
   SIGHT_RPC,
@@ -43,6 +53,8 @@ import {
   type SightFigmaMcpWriteResult,
   type SightFigwrightPluginInfo,
   type SightFigwrightPluginUpdateResult,
+  type SightImageProbeRequest,
+  type SightImageProbeResult,
   type SightModelEntry,
   type SightProviderEntry,
   type SightReadBackend,
@@ -114,11 +126,22 @@ interface RawModel {
   readonly name?: string
   readonly reasoningEfforts?: Readonly<Record<string, string | null>> | false
   readonly compat?: Readonly<Record<string, unknown>>
+  /** pi-ai profile field: the modalities this model accepts. */
+  readonly input?: readonly string[]
   /** Official-channel catalog field; the pi-ai profile spells the same fact `input`. */
   readonly inputModalities?: readonly string[]
 }
 interface RawSection {
   readonly providers?: Readonly<Record<string, RawProfile | undefined>>
+}
+
+/** One chunk as the probe consumes it; only the terminal `finish` carries a failure. */
+interface ProbeStreamChunk {
+  readonly type?: string
+  readonly reason?: {
+    readonly kind?: string
+    readonly failure?: { readonly code?: string; readonly message?: string }
+  }
 }
 
 /**
@@ -132,7 +155,26 @@ interface LlmServiceLike {
   listModels(provider: string): Promise<readonly { id: string; name: string; inputModalities?: readonly string[] }[]>
   resolveModelInfo(provider: string, model: string): Promise<{
     reasoning?: { efforts?: readonly { id?: string; name?: string }[] }
+    inputModalities?: readonly string[]
   }>
+  stream(options: {
+    provider: string
+    model: string
+    messages: readonly { readonly role: string; readonly content: readonly unknown[] }[]
+    maxTokens?: number
+    signal?: AbortSignal
+  }): AsyncIterable<ProbeStreamChunk>
+}
+
+/**
+ * Durable attachment store, narrowed to the one call the probe needs. Declared
+ * structurally rather than imported: `@deepseek-ai/dsh-attachment` is a DSH
+ * runtime package the plugin reaches through the module table, not a build
+ * dependency (the same reason `LlmServiceLike` exists).
+ */
+interface AttachmentStoreLike {
+  readonly imageLimits?: { readonly mediaTypes?: readonly string[] }
+  saveImages(inputs: readonly { readonly data: Buffer; readonly mediaType: string }[]): Promise<readonly unknown[]>
 }
 
 /** Whether a resolved modality list admits images; `null` when it states none. */
@@ -151,6 +193,13 @@ function fail(message: string): ConnectionRpcResult<unknown> {
 
 /** Cap for one `/sight` request body: every endpoint carries a small JSON payload. */
 const MAX_SIGHT_BODY_BYTES = 1 << 20
+
+/**
+ * Deadline for one probe request. The settings page waits on this RPC, so a
+ * route that never answers must fail as `inconclusive` (an aborted request is
+ * not a capability verdict) rather than leave the page spinning.
+ */
+const PROBE_TIMEOUT_MS = 20_000
 
 /** Abort signal handed to the connection-shaped handler; `/sight` work never outlives a request. */
 const SIGHT_NEVER_ABORTED = new AbortController().signal
@@ -250,6 +299,17 @@ export function apply(ctx: Context): void {
     const llm = sightCtx.get('llm') as unknown as LlmServiceLike
 
     /**
+     * Durable attachment store, when the composition mounts one. Injected as a
+     * nested optional service rather than a fourth required one: a profile
+     * without attachments must still get the rest of the Host half, and only the
+     * image probe degrades (to `inconclusive`).
+     */
+    let attachments: AttachmentStoreLike | undefined
+    sightCtx.inject(['attachments'], (attachCtx) => {
+      attachments = attachCtx.get('attachments') as unknown as AttachmentStoreLike
+    })
+
+    /**
      * Live descriptor of one settings namespace, or undefined when the running
      * composition carries no such entry. Intentionally uncaught: a settings read
      * that fails must surface on the page instead of reading as "no providers".
@@ -347,7 +407,7 @@ export function apply(ctx: Context): void {
           } catch (caught) {
             error = caught instanceof Error ? caught.message : String(caught)
           }
-          providers.push({ provider, name: profile?.displayName ?? provider, models, error })
+          providers.push({ provider, name: profile?.displayName ?? provider, models, error, probeable: true })
         }
       }
       // The official DeepSeek channel is a distinct adapter (deepseek-official)
@@ -395,10 +455,10 @@ export function apply(ctx: Context): void {
               image: imageAdmitted(dm?.inputModalities),
             }
           }))
-          providers.push({ provider: DEEPSEEK_PROVIDER, name: 'DeepSeek 官方', models, error: null })
+          providers.push({ provider: DEEPSEEK_PROVIDER, name: 'DeepSeek 官方', models, error: null, probeable: false })
         }
       } catch (de) {
-        providers.push({ provider: DEEPSEEK_PROVIDER, name: 'DeepSeek 官方', models: [], error: de instanceof Error ? de.message : String(de) })
+        providers.push({ provider: DEEPSEEK_PROVIDER, name: 'DeepSeek 官方', models: [], error: de instanceof Error ? de.message : String(de), probeable: false })
       }
       return { namespace: NS, reasoningDictionary, providers }
     }
@@ -599,6 +659,215 @@ export function apply(ctx: Context): void {
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) }
       }
+    }
+
+    /**
+     * Where one model's `input` lives in the stored profile, plus what was there
+     * before the probe touched it. Restoring needs both facts: a field that was
+     * absent must be removed again, not set to the schema's materialized default.
+     */
+    interface InputSnapshot {
+      readonly path: readonly string[]
+      readonly had: boolean
+      readonly value: unknown
+    }
+
+    /** Locate one model's `input` field in the stored profile, or null when the model is not stored. */
+    const locateModelInput = (provider: string, profile: RawProfile, model: string): InputSnapshot | null => {
+      const models = Array.isArray(profile.models) ? profile.models : undefined
+      const index = models?.findIndex(entry => entry !== null && typeof entry === 'object' && entry.id === model) ?? -1
+      if (models !== undefined && index >= 0) {
+        const entry = models[index] as { input?: unknown } | undefined
+        return { path: ['providers', provider, 'models', String(index), 'input'], had: entry?.input !== undefined, value: entry?.input }
+      }
+      const override = profile.modelOverrides?.[model] as { input?: unknown } | undefined
+      if (override === undefined) return null
+      return { path: ['providers', provider, 'modelOverrides', model, 'input'], had: override.input !== undefined, value: override.input }
+    }
+
+    /** Put a model's `input` back exactly as {@link locateModelInput} found it. */
+    const restoreModelInput = async (snapshot: InputSnapshot): Promise<void> => {
+      await settings.mutate(NS, [snapshot.had
+        ? { op: 'set', path: [...snapshot.path], value: snapshot.value }
+        : { op: 'unset', path: [...snapshot.path] }])
+    }
+
+    /**
+     * Run one probe request and reduce it to the two facts the classifier needs.
+     *
+     * Failures arrive as a terminal `finish` chunk with `reason.kind === 'error'`
+     * (the runtime turns every adapter dispatch and iteration failure into one),
+     * not as a throw — middleware and consumer throws are the only ones that
+     * propagate, and those are caught here too so a probe never escapes as an
+     * RPC error.
+     * @param input - the route, the content to send, and the caller's abort signal.
+     * @returns whether the request was accepted, and the failure's code and message when not.
+     */
+    const runProbeRequest = async (input: {
+      readonly provider: string
+      readonly model: string
+      readonly content: readonly unknown[]
+      readonly signal: AbortSignal
+    }): Promise<{ ok: boolean; code?: string | undefined; message?: string | undefined }> => {
+      try {
+        for await (const chunk of llm.stream({
+          provider: input.provider,
+          model: input.model,
+          messages: [{ role: 'user', content: input.content }],
+          maxTokens: PROBE_MAX_TOKENS,
+          signal: input.signal,
+        })) {
+          if (chunk.type !== 'finish') continue
+          const kind = chunk.reason?.kind
+          if (kind !== 'error' && kind !== 'aborted') return { ok: true }
+          const code = chunk.reason?.failure?.code
+          const message = chunk.reason?.failure?.message
+          // An empty completion still proves the endpoint took the request: the
+          // round trip finished, so the image was accepted.
+          if (code === 'EMPTY_RESPONSE') return { ok: true }
+          return { ok: false, code, message }
+        }
+        return { ok: false, message: '流已结束但没有收到 finish 块' }
+      } catch (error) {
+        const code = (error as { code?: unknown }).code
+        return {
+          ok: false,
+          code: typeof code === 'string' ? code : undefined,
+          message: error instanceof Error ? error.message : String(error),
+        }
+      }
+    }
+
+    /**
+     * Test whether one pi-ai route's endpoint actually accepts an image.
+     *
+     * DSH admits images by declaration, so the endpoint can only be asked once
+     * `input` includes `image` — the local gate refuses before any byte leaves
+     * otherwise. The probe therefore:
+     *
+     * 1. sends a **text-only control request** to prove the route, credential,
+     *    and base URL work (and to give a failure something to be attributed to);
+     * 2. writes `input: [text, image]` when it is not already there;
+     * 3. re-reads the adapter's resolved modalities — if the declaration did not
+     *    take effect the request would be refused locally, which must not be
+     *    mistaken for an endpoint refusal;
+     * 4. mints the 1×1 probe image through the durable attachment store and
+     *    sends it;
+     * 5. keeps the declaration on acceptance and **restores the exact snapshot**
+     *    on anything else, so a rejected or inconclusive probe leaves no trace.
+     * @param req - the provider and model to test.
+     * @returns the tri-state verdict with its evidence.
+     */
+    const probeImage = async (req: SightImageProbeRequest): Promise<SightImageProbeResult> => {
+      const provider = typeof req.provider === 'string' ? req.provider : ''
+      const model = typeof req.model === 'string' ? req.model : ''
+      if (provider.length === 0 || model.length === 0) {
+        return { verdict: 'inconclusive', detail: 'provider 与 model 必填', declared: false }
+      }
+      if (provider === DEEPSEEK_PROVIDER) {
+        return {
+          verdict: 'inconclusive',
+          detail: '官方渠道的图片能力写在渠道目录的 inputModalities 里，本探测不写该目录',
+          declared: false,
+        }
+      }
+      const profile = rawSection()?.providers?.[provider]
+      if (profile === undefined || typeof profile !== 'object') {
+        return { verdict: 'inconclusive', detail: `未找到渠道 ${provider}`, declared: false }
+      }
+      const snapshot = locateModelInput(provider, profile, model)
+      if (snapshot === null) {
+        return { verdict: 'inconclusive', detail: `${provider}/${model} 不在该渠道的 models/modelOverrides 里`, declared: false }
+      }
+
+      // 1) Control request. Text only, so it needs no declaration and proves the
+      // route before anything is written.
+      const signal = AbortSignal.timeout(PROBE_TIMEOUT_MS)
+      const control = await runProbeRequest({
+        provider,
+        model,
+        content: [{ type: 'text', text: PROBE_PROMPT_TEXT }],
+        signal,
+      })
+      if (!control.ok) {
+        return {
+          ...classifyImageProbeFailure({ controlSucceeded: false, code: control.code, message: control.message }),
+          declared: imageAdmitted((await llm.resolveModelInfo(provider, model)).inputModalities) === true,
+        }
+      }
+
+      // 2) Declare, unless the model already reports image support.
+      const before = await llm.resolveModelInfo(provider, model)
+      const alreadyDeclared = imageAdmitted(before.inputModalities) === true
+      let wroteDeclaration = false
+      if (!alreadyDeclared) {
+        try {
+          await settings.mutate(NS, [{ op: 'set', path: [...snapshot.path], value: ['text', 'image'] }])
+          wroteDeclaration = true
+        } catch (error) {
+          return {
+            verdict: 'inconclusive',
+            detail: `写入 input 失败：${error instanceof Error ? error.message : String(error)}`,
+            declared: false,
+          }
+        }
+      }
+
+      /** Roll the declaration back when the probe did not earn it. */
+      const rollback = async (): Promise<boolean> => {
+        if (!wroteDeclaration) return alreadyDeclared
+        try {
+          await restoreModelInput(snapshot)
+          return false
+        } catch {
+          // The declaration stays; say so rather than claiming a clean rollback.
+          return true
+        }
+      }
+
+      // 3) The declaration must actually reach the adapter, or the next request
+      // is refused locally and the endpoint is never consulted.
+      const after = await llm.resolveModelInfo(provider, model)
+      if (imageAdmitted(after.inputModalities) !== true) {
+        return { ...classifyDeclarationNotApplied(after.inputModalities), declared: await rollback() }
+      }
+
+      // 4) Mint the probe image. A missing store or refused bytes is not a
+      // statement about the endpoint.
+      if (attachments === undefined) {
+        return { ...classifyImageProbeUnsendable('未挂载附件服务'), declared: await rollback() }
+      }
+      let probeRef: unknown
+      try {
+        const accepted = attachments.imageLimits?.mediaTypes
+        if (Array.isArray(accepted) && !accepted.includes(PROBE_IMAGE_MEDIA_TYPE)) {
+          return { ...classifyImageProbeUnsendable(`附件服务不接受 ${PROBE_IMAGE_MEDIA_TYPE}`), declared: await rollback() }
+        }
+        const refs = await attachments.saveImages([
+          { data: Buffer.from(PROBE_IMAGE_PNG_BASE64, 'base64'), mediaType: PROBE_IMAGE_MEDIA_TYPE },
+        ])
+        probeRef = refs[0]
+        if (probeRef === undefined) return { ...classifyImageProbeUnsendable('附件服务未返回引用'), declared: await rollback() }
+      } catch (error) {
+        return {
+          ...classifyImageProbeUnsendable(error instanceof Error ? error.message : String(error)),
+          declared: await rollback(),
+        }
+      }
+
+      // 5) The image request itself.
+      const image = await runProbeRequest({
+        provider,
+        model,
+        content: [
+          { type: 'text', text: PROBE_PROMPT_TEXT },
+          { type: 'image', attachment: probeRef },
+        ],
+        signal,
+      })
+      if (image.ok) return { ...classifyImageProbeSuccess(), declared: true }
+      const outcome = classifyImageProbeFailure({ controlSucceeded: true, code: image.code, message: image.message })
+      return { ...outcome, declared: await rollback() }
     }
 
     // ── Figma MCP bridge ────────────────────────────────────────────────────
@@ -1003,6 +1272,13 @@ export function apply(ctx: Context): void {
           case SIGHT_RPC.clearReasoning: {
             const p = payload as Partial<SightReasoningClearRequest>
             return ok(await clearReasoning({
+              provider: typeof p.provider === 'string' ? p.provider : '',
+              model: typeof p.model === 'string' ? p.model : '',
+            }))
+          }
+          case SIGHT_RPC.probeImage: {
+            const p = payload as Partial<SightImageProbeRequest>
+            return ok(await probeImage({
               provider: typeof p.provider === 'string' ? p.provider : '',
               model: typeof p.model === 'string' ? p.model : '',
             }))

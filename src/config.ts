@@ -12,6 +12,7 @@ export const SIGHT_RPC = {
   status: 'status',
   applyReasoning: 'applyReasoning',
   clearReasoning: 'clearReasoning',
+  probeImage: 'probeImage',
   figmaMcpStatus: 'figmaMcpStatus',
   figmaMcpApply: 'figmaMcpApply',
   figmaMcpRemove: 'figmaMcpRemove',
@@ -54,6 +55,12 @@ export interface SightProviderEntry {
   readonly name: string
   readonly models: readonly SightModelEntry[]
   readonly error: string | null
+  /**
+   * Whether {@link SIGHT_RPC.probeImage} applies to this group. The official
+   * DeepSeek channel declares modalities in its own catalog
+   * (`inputModalities`), which the probe does not write, so it is not probeable.
+   */
+  readonly probeable: boolean
 }
 
 /** Result of {@link SIGHT_RPC.status}. */
@@ -120,6 +127,30 @@ export interface SightReasoningClearResult {
   readonly ok: boolean
   /** Diagnostic when the write was refused, or the model had no declaration. */
   readonly error: string | null
+}
+
+/**
+ * What an endpoint image-capability probe concluded. `inconclusive` is a real
+ * outcome, not a failure to report one: a single rejected request cannot be
+ * attributed to the image unless a text-only control request over the same
+ * route already succeeded, so everything unattributable lands here rather than
+ * being guessed at as `rejected`.
+ */
+export type SightImageProbeVerdict = 'supported' | 'rejected' | 'inconclusive'
+
+/** Request payload for {@link SIGHT_RPC.probeImage}: test one pi-ai route's endpoint. */
+export interface SightImageProbeRequest {
+  readonly provider: string
+  readonly model: string
+}
+
+/** Result of {@link SIGHT_RPC.probeImage}. */
+export interface SightImageProbeResult {
+  readonly verdict: SightImageProbeVerdict
+  /** The evidence behind the verdict, including the provider's own words. */
+  readonly detail: string
+  /** Whether `input` includes `image` *after* this probe. */
+  readonly declared: boolean
 }
 
 /**

@@ -23,6 +23,8 @@ import {
   type SightFigmaMcpStatusResult,
   type SightFigmaMcpWriteResult,
   type SightFigwrightPluginUpdateResult,
+  type SightImageProbeRequest,
+  type SightImageProbeResult,
   type SightModelEntry,
   type SightReasoningChange,
   type SightReasoningClearRequest,
@@ -166,10 +168,13 @@ function RepoDirPicker(props: { value: string; onPick: (path: string) => void; o
 function ModelRow(props: {
   model: SightModelEntry
   provider: string
+  probeable: boolean
   busy: boolean
+  probe: SightImageProbeResult | null
   onClear: (provider: string, model: string) => void
+  onProbe: (provider: string, model: string) => void
 }): ReactElement {
-  const { model, provider, busy, onClear } = props
+  const { model, provider, probeable, busy, probe, onClear, onProbe } = props
   // Clearing is a two-step action: it removes a declaration the user may have
   // written by hand, so it must not be one stray click away.
   const [confirming, setConfirming] = React.useState(false)
@@ -203,15 +208,40 @@ function ModelRow(props: {
         onBlur: () => setConfirming(false),
       }, confirming ? '确认清除' : '清除声明')
     : null
+  // The probe writes a declaration, so it is offered only where that is
+  // meaningful (a pi-ai route) and only while it cannot be reading a stale row.
+  const probeButton = probeable
+    ? React.createElement('button', {
+        type: 'button',
+        style: { ...BUTTON, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap', minHeight: 24 },
+        disabled: busy,
+        title: '向该渠道端点发一次真实的探针请求（1×1 图片，先用纯文本对照请求确认链路可用）。'
+          + '端点接受则写入 input: [text, image]；拒绝或无法判定则回滚，不留痕迹。会产生一次极小的模型调用。',
+        onClick: () => onProbe(provider, model.id),
+      }, '实测图片能力')
+    : null
+  // Tri-state on purpose: "无法判定" must never read as "不支持".
+  const probeChip = probe === null
+    ? null
+    : probe.verdict === 'supported'
+      ? React.createElement(Chip, { tone: 'on' }, '实测: 端点接受')
+      : probe.verdict === 'rejected'
+        ? React.createElement(Chip, { tone: 'warn' }, '实测: 端点拒绝')
+        : React.createElement(Chip, { tone: 'info' }, '实测: 无法判定')
   return React.createElement(
     'div',
     { style: ROW },
     React.createElement('div', { style: { flex: 1, minWidth: 0 } },
       React.createElement('div', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: model.id }, model.id),
       React.createElement('div', { style: { fontSize: 11, opacity: 0.6 } }, model.name),
+      probe === null
+        ? null
+        : React.createElement('div', { style: { fontSize: 11, opacity: 0.6, marginTop: 2, whiteSpace: 'pre-wrap' } }, probe.detail),
     ),
     imageChip,
+    probeChip,
     reasoningChip,
+    probeButton,
     clearButton,
   )
 }
@@ -221,6 +251,8 @@ function SightPage(): ReactElement {
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState('')
   const [reasoningResult, setReasoningResult] = React.useState<SightApplyReasoningResult | null>(null)
+  /** Latest probe verdict per `provider/model`, kept until the page is left. */
+  const [probes, setProbes] = React.useState<Record<string, SightImageProbeResult>>({})
 
   const load = React.useCallback(() => {
     rpc<SightStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.status, {})
@@ -254,6 +286,22 @@ function SightPage(): ReactElement {
       .finally(() => setBusy(''))
   }
 
+  /**
+   * Test one route's endpoint for real image acceptance. The Host writes the
+   * declaration when the endpoint accepts and rolls it back otherwise, so the
+   * reload below is what makes the row's chips reflect the outcome.
+   */
+  const probeImage = (provider: string, model: string): void => {
+    if (busy !== '') return
+    setBusy(`${provider}/${model}`)
+    setError(null)
+    const payload: SightImageProbeRequest = { provider, model }
+    rpc<SightImageProbeResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.probeImage, payload)
+      .then(value => { setProbes(current => ({ ...current, [`${provider}/${model}`]: value })); load() })
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
+      .finally(() => setBusy(''))
+  }
+
   const children: ReactNode[] = []
   children.push(React.createElement('h2', { style: { margin: 0, fontSize: 16, fontWeight: 600 } }, '模型推理等级 (Sight)'))
   children.push(React.createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.75, lineHeight: 1.6 } },
@@ -261,7 +309,9 @@ function SightPage(): ReactElement {
     '模型选择器随即出现这些档位。声明写入 llm-pi-ai 配置，下次请求即生效。'))
   children.push(React.createElement('p', { style: { margin: 0, fontSize: 12, opacity: 0.65, lineHeight: 1.6 } },
     '行尾的「🖼 可读图片 / 仅文本」是适配器解析出的图片输入能力：显示「仅文本」的模型无法粘贴图片。' +
-    '要打开它，到 设置 → 模型 → 该渠道 → 展开模型行 → 勾选「输入类型」里的「图片」（自建渠道的模型 id 不在内置目录里，默认是纯文本）。'))
+    '自建渠道的模型 id 不在内置目录里，默认是纯文本；点「实测图片能力」可以发一次真实的探针请求问端点——' +
+    '先用纯文本对照请求确认链路可用，端点接受就写入 input: [text, image]，拒绝或无法判定就回滚。' +
+    '也可以到 设置 → 模型 → 该渠道 → 展开模型行 → 勾选「输入类型」里的「图片」手工声明。'))
   children.push(React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
     React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: applyReasoning },
       busy === 'reasoning' ? '补档中…' : '自动补推理等级'),
@@ -329,8 +379,11 @@ function SightPage(): ReactElement {
           key: model.id,
           model,
           provider: group.provider,
+          probeable: group.probeable !== false,
           busy: busy !== '',
+          probe: probes[`${group.provider}/${model.id}`] ?? null,
           onClear: clearDeclaration,
+          onProbe: probeImage,
         }))
         const head = React.createElement('div', { style: GROUP_HEAD },
           React.createElement('span', null, group.name),
