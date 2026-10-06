@@ -55,6 +55,7 @@ import {
   type SightFigwrightPluginUpdateResult,
   type SightImageProbeRequest,
   type SightImageProbeResult,
+  type SightImageSupportRequest,
   type SightModelEntry,
   type SightProviderEntry,
   type SightReadBackend,
@@ -1282,6 +1283,19 @@ export function apply(ctx: Context): void {
               provider: typeof p.provider === 'string' ? p.provider : '',
               model: typeof p.model === 'string' ? p.model : '',
             }))
+          }
+          case SIGHT_RPC.imageSupport: {
+            const p = payload as Partial<SightImageSupportRequest>
+            const provider = typeof p.provider === 'string' ? p.provider : ''
+            const model = typeof p.model === 'string' ? p.model : ''
+            if (provider.length === 0 || model.length === 0) return ok({ image: null })
+            try {
+              const info = await llm.resolveModelInfo(provider, model)
+              return ok({ image: imageAdmitted(info.inputModalities) })
+            } catch {
+              // An unresolvable route states nothing; admission treats that as refusal.
+              return ok({ image: null })
+            }
           }
           case SIGHT_RPC.figmaMcpStatus:
             return ok(figmaMcpStatus())

@@ -13,6 +13,7 @@ export const SIGHT_RPC = {
   applyReasoning: 'applyReasoning',
   clearReasoning: 'clearReasoning',
   probeImage: 'probeImage',
+  imageSupport: 'imageSupport',
   figmaMcpStatus: 'figmaMcpStatus',
   figmaMcpApply: 'figmaMcpApply',
   figmaMcpRemove: 'figmaMcpRemove',
@@ -151,6 +152,21 @@ export interface SightImageProbeResult {
   readonly detail: string
   /** Whether `input` includes `image` *after* this probe. */
   readonly declared: boolean
+}
+
+/** Request payload for {@link SIGHT_RPC.imageSupport}: read one route's admitted modalities. */
+export interface SightImageSupportRequest {
+  readonly provider: string
+  readonly model: string
+}
+
+/**
+ * Result of {@link SIGHT_RPC.imageSupport}: the same `inputModalities` the
+ * prompt admission reads, so `true` means an image will be accepted. `null` when
+ * the adapter states no modalities at all (which admission treats as refusal).
+ */
+export interface SightImageSupportResult {
+  readonly image: boolean | null
 }
 
 /**

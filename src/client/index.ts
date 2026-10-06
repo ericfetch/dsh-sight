@@ -25,6 +25,8 @@ import {
   type SightFigwrightPluginUpdateResult,
   type SightImageProbeRequest,
   type SightImageProbeResult,
+  type SightImageSupportRequest,
+  type SightImageSupportResult,
   type SightModelEntry,
   type SightReasoningChange,
   type SightReasoningClearRequest,
@@ -64,7 +66,7 @@ const CHIP_ON: CSSProperties = { borderRadius: 999, padding: '1px 8px', fontSize
 const CHIP_OFF: CSSProperties = { borderRadius: 999, padding: '1px 8px', fontSize: 11, background: 'rgba(128,128,128,0.14)', color: '#9ca3af', whiteSpace: 'nowrap' }
 const CHIP_WARN: CSSProperties = { borderRadius: 999, padding: '1px 8px', fontSize: 11, background: 'rgba(250,204,21,0.16)', color: '#eab308', whiteSpace: 'nowrap' }
 const CHIP_INFO: CSSProperties = { borderRadius: 999, padding: '1px 8px', fontSize: 11, background: 'rgba(59,130,246,0.16)', color: '#3b82f6', whiteSpace: 'nowrap' }
-const ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', borderTop: '1px solid rgba(128,128,128,0.15)', fontSize: 13 }
+const ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', borderTop: '1px solid rgba(128,128,128,0.15)', fontSize: 13, flexWrap: 'wrap' }
 const GROUP: CSSProperties = { border: '1px solid rgba(128,128,128,0.25)', borderRadius: 8, overflow: 'hidden' }
 const GROUP_HEAD: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 12, fontWeight: 600, borderBottom: '1px solid rgba(128,128,128,0.25)' }
 
@@ -169,12 +171,16 @@ function ModelRow(props: {
   model: SightModelEntry
   provider: string
   probeable: boolean
-  busy: boolean
+  /** The page's busy key (`provider/model`), or '' when idle. */
+  busy: string
   probe: SightImageProbeResult | null
   onClear: (provider: string, model: string) => void
   onProbe: (provider: string, model: string) => void
 }): ReactElement {
   const { model, provider, probeable, busy, probe, onClear, onProbe } = props
+  const key = `${provider}/${model.id}`
+  const working = busy === key
+  const anyBusy = busy !== ''
   // Clearing is a two-step action: it removes a declaration the user may have
   // written by hand, so it must not be one stray click away.
   const [confirming, setConfirming] = React.useState(false)
@@ -195,8 +201,8 @@ function ModelRow(props: {
   const clearButton = model.reasoning?.source === 'declared'
     ? React.createElement('button', {
         type: 'button',
-        style: { ...BUTTON, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap', minHeight: 24 },
-        disabled: busy,
+        style: { ...BUTTON, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap', minHeight: 24, opacity: anyBusy && !working ? 0.5 : 1 },
+        disabled: anyBusy,
         title: '删除该模型写入的 reasoningEfforts（及本插件写入的 compat），'
           + '让适配器/内置目录的档位重新生效。手写的其他 compat 键保留。',
         onClick: () => {
@@ -206,19 +212,25 @@ function ModelRow(props: {
           } else setConfirming(true)
         },
         onBlur: () => setConfirming(false),
-      }, confirming ? '确认清除' : '清除声明')
+      }, working ? '清除中…' : confirming ? '确认清除' : '清除声明')
     : null
   // The probe writes a declaration, so it is offered only where that is
-  // meaningful (a pi-ai route) and only while it cannot be reading a stale row.
+  // meaningful (a pi-ai route).
   const probeButton = probeable
     ? React.createElement('button', {
         type: 'button',
-        style: { ...BUTTON, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap', minHeight: 24 },
-        disabled: busy,
+        style: {
+          ...BUTTON, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap', minHeight: 24,
+          // A probe is two real model calls and can take seconds, so the row it
+          // belongs to must show it is the one working.
+          opacity: working ? 0.65 : anyBusy ? 0.5 : 1,
+          borderColor: working ? 'rgba(59,130,246,0.75)' : undefined,
+        },
+        disabled: anyBusy,
         title: '向该渠道端点发一次真实的探针请求（1×1 图片，先用纯文本对照请求确认链路可用）。'
           + '端点接受则写入 input: [text, image]；拒绝或无法判定则回滚，不留痕迹。会产生一次极小的模型调用。',
         onClick: () => onProbe(provider, model.id),
-      }, '实测图片能力')
+      }, working ? '探测中…' : '实测图片能力')
     : null
   // Tri-state on purpose: "无法判定" must never read as "不支持".
   const probeChip = probe === null
@@ -228,21 +240,31 @@ function ModelRow(props: {
       : probe.verdict === 'rejected'
         ? React.createElement(Chip, { tone: 'warn' }, '实测: 端点拒绝')
         : React.createElement(Chip, { tone: 'info' }, '实测: 无法判定')
-  return React.createElement(
+  const row = React.createElement(
     'div',
     { style: ROW },
-    React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+    // A basis wide enough to keep the id on one line; the chips wrap to the
+    // next line instead of squeezing it into a vertical stack.
+    React.createElement('div', { style: { flex: '1 1 220px', minWidth: 0 } },
       React.createElement('div', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: model.id }, model.id),
       React.createElement('div', { style: { fontSize: 11, opacity: 0.6 } }, model.name),
-      probe === null
-        ? null
-        : React.createElement('div', { style: { fontSize: 11, opacity: 0.6, marginTop: 2, whiteSpace: 'pre-wrap' } }, probe.detail),
     ),
     imageChip,
     probeChip,
     reasoningChip,
     probeButton,
     clearButton,
+  )
+  if (probe === null) return row
+  // The evidence is prose of unknown length, so it gets its own full-width line
+  // rather than being squeezed into the id column.
+  return React.createElement(
+    React.Fragment,
+    null,
+    row,
+    React.createElement('div', {
+      style: { padding: '0 12px 7px', marginTop: -4, fontSize: 11, opacity: 0.65, lineHeight: 1.5 },
+    }, `实测结果：${probe.detail}${probe.declared ? '（input 已写入 image）' : '（已回滚，配置未改动）'}`),
   )
 }
 
@@ -254,19 +276,20 @@ function SightPage(): ReactElement {
   /** Latest probe verdict per `provider/model`, kept until the page is left. */
   const [probes, setProbes] = React.useState<Record<string, SightImageProbeResult>>({})
 
-  const load = React.useCallback(() => {
-    rpc<SightStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.status, {})
+  /** Reload the overview; the returned promise lets callers keep the row busy until the chips are current. */
+  const load = React.useCallback((): Promise<void> => {
+    return rpc<SightStatusResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.status, {})
       .then(value => { setData(value); setError(null) })
       .catch((e: unknown) => setError(formatErrorMessage(e)))
   }, [])
 
-  React.useEffect(() => { load() }, [load])
+  React.useEffect(() => { void load() }, [load])
 
   const applyReasoning = (): void => {
     if (busy !== '') return
     setBusy('reasoning')
     rpc<SightApplyReasoningResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.applyReasoning, {})
-      .then(value => { setReasoningResult(value); load() })
+      .then(async value => { setReasoningResult(value); await load() })
       .catch((e: unknown) => setError(formatErrorMessage(e)))
       .finally(() => setBusy(''))
   }
@@ -278,9 +301,9 @@ function SightPage(): ReactElement {
     setError(null)
     const payload: SightReasoningClearRequest = { provider, model }
     rpc<SightReasoningClearResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.clearReasoning, payload)
-      .then(value => {
+      .then(async value => {
         if (!value.ok) setError(`清除 ${provider}/${model} 的声明失败：${value.error ?? 'unknown'}`)
-        load()
+        await load()
       })
       .catch((e: unknown) => setError(formatErrorMessage(e)))
       .finally(() => setBusy(''))
@@ -289,7 +312,9 @@ function SightPage(): ReactElement {
   /**
    * Test one route's endpoint for real image acceptance. The Host writes the
    * declaration when the endpoint accepts and rolls it back otherwise, so the
-   * reload below is what makes the row's chips reflect the outcome.
+   * reload below is what makes the row's chips reflect the outcome — and the row
+   * stays busy until that reload lands, because a probe is two real model calls
+   * and can take seconds.
    */
   const probeImage = (provider: string, model: string): void => {
     if (busy !== '') return
@@ -297,7 +322,10 @@ function SightPage(): ReactElement {
     setError(null)
     const payload: SightImageProbeRequest = { provider, model }
     rpc<SightImageProbeResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.probeImage, payload)
-      .then(value => { setProbes(current => ({ ...current, [`${provider}/${model}`]: value })); load() })
+      .then(async value => {
+        setProbes(current => ({ ...current, [`${provider}/${model}`]: value }))
+        await load()
+      })
       .catch((e: unknown) => setError(formatErrorMessage(e)))
       .finally(() => setBusy(''))
   }
@@ -380,7 +408,7 @@ function SightPage(): ReactElement {
           model,
           provider: group.provider,
           probeable: group.probeable !== false,
-          busy: busy !== '',
+          busy,
           probe: probes[`${group.provider}/${model.id}`] ?? null,
           onClear: clearDeclaration,
           onProbe: probeImage,
@@ -811,6 +839,84 @@ function FigmaMcpPage(): ReactElement {
   return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 720 } }, ...children)
 }
 
+/**
+ * Composer mark: the model this session is talking to accepts images.
+ *
+ * Registered into `conversation.input.right`, which the composer renders
+ * immediately before the model seat — `conversation.input.model` is a `single`
+ * slot already owned by the model selector, so this is the closest position a
+ * plugin may take. It reports the *declaration* admission reads
+ * (`inputModalities`), so the mark is present exactly when pasting an image
+ * would be accepted; an absent mark is not a claim that the model is text-only
+ * (that is what the settings page's 仅文本 chip is for).
+ */
+function ImageCapabilityMark(props: { sessionId?: unknown }): ReactElement | null {
+  const [image, setImage] = React.useState(false)
+  React.useEffect(() => {
+    let alive = true
+    // `modelDirectories` belongs to ui-model-selection, which is a sibling
+    // plugin: absent in a composition without it, so it is reached defensively
+    // rather than injected (which would unmount this plugin entirely).
+    let directory: { store: { getSnapshot(): { current: { provider: string; model: string } | null }; subscribe(fn: () => void): () => void } } | undefined
+    try {
+      const directories = clientCtx.get('modelDirectories') as {
+        directoryFor(sessionId: unknown): typeof directory
+      } | undefined
+      if (directories === undefined) return
+      directory = directories.directoryFor(props.sessionId)
+    } catch {
+      return
+    }
+    const refresh = (): void => {
+      const current = directory?.store.getSnapshot().current
+      if (current === null || current === undefined) {
+        setImage(false)
+        return
+      }
+      const payload: SightImageSupportRequest = { provider: current.provider, model: current.model }
+      rpc<SightImageSupportResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.imageSupport, payload)
+        .then(value => { if (alive) setImage(value.image === true) })
+        .catch(() => { if (alive) setImage(false) })
+    }
+    refresh()
+    let stop = (): void => {}
+    try {
+      stop = directory?.store.subscribe(refresh) ?? stop
+    } catch { /* a directory without a subscribable store just never refreshes */ }
+    return () => { alive = false; stop() }
+  }, [props.sessionId])
+  if (!image) return null
+  return React.createElement('span', {
+    style: {
+      display: 'inline-flex', alignItems: 'center', gap: 4, height: 24, padding: '0 8px',
+      borderRadius: 999, fontSize: 11, whiteSpace: 'nowrap',
+      background: 'rgba(34,197,94,0.16)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.35)',
+    },
+    title: '当前模型已声明支持图片输入：输入框粘贴/拖入的图片会以原生图片内容发送给模型。',
+  }, React.createElement('span', { 'aria-hidden': true }, '🖼'), React.createElement('span', null, '可读图片'))
+}
+
+/**
+ * The conversation composer's slot surface, narrowed to what this half uses.
+ *
+ * `conversation.input.right` is declared by
+ * `@deepseek-ai/dsh-client-ui-conversation`, a sibling client plugin the runtime
+ * provides. A plugin does not depend on it, and taking the dependency only for
+ * its `SlotMap` declaration is not worth it — the same reason the Host half
+ * narrows `llm`, `settings`, and `attachments` instead of importing them. The
+ * slot name and prop shape are asserted here rather than checked.
+ *
+ * Registration is still safe before the composer declares the slot: every slot
+ * key carries a declaration epoch, and `ctx.slots.inject` waits on it.
+ */
+interface ConversationSlotsLike {
+  inject(name: string, register: () => () => void): void
+  register(
+    options: { readonly name: string; readonly id: string; readonly order?: number },
+    component: (props: { readonly sessionId?: unknown }) => unknown,
+  ): () => void
+}
+
 /** Mount the Sight browser surfaces. */
 export function apply(ctx: Context): void {
   clientCtx = ctx
@@ -823,5 +929,14 @@ export function apply(ctx: Context): void {
   ctx.slots.inject('settings.section', () => ctx.slots.register(
     { name: 'settings.section', id: 'sight-figma-mcp', order: 13, label: () => 'Figma MCP' },
     () => React.createElement(FigmaMcpPage, null),
+  ))
+
+  // The composer renders `conversation.input.right` immediately before the model
+  // seat (`conversation.input.model` is a `single` slot the model selector
+  // already owns), so this is the closest position a plugin may take.
+  const composerSlots = ctx.slots as unknown as ConversationSlotsLike
+  composerSlots.inject('conversation.input.right', () => composerSlots.register(
+    { name: 'conversation.input.right', id: 'sight-image-mark', order: 20 },
+    props => React.createElement(ImageCapabilityMark, { sessionId: props.sessionId }),
   ))
 }
