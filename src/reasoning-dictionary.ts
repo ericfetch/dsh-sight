@@ -126,6 +126,41 @@ export type ReasoningFillDecision =
   /** Leave the model alone: no dictionary family claims its id. */
   | { readonly kind: 'unmatched' }
 
+/** One model's reasoning capability, as the settings page reports it. */
+export interface ModelReasoningDescription {
+  readonly source: 'adapter' | 'declared'
+  readonly levels: readonly string[]
+}
+
+/**
+ * Describe one **pi-ai** model's reasoning levels for the settings page.
+ *
+ * A stored `reasoningEfforts` map is reported as `declared` *before* the adapter
+ * is consulted, because on a pi-ai route the adapter's answer is derived from
+ * that very map: `resolveModelReasoning` turns it into `thinkingLevelMap`, so
+ * `resolveModelInfo` echoes the declared levels straight back. Asking the
+ * adapter first would label every declared model `adapter`, leaving the
+ * "declared" state — and the action that clears it — unreachable.
+ *
+ * The official DeepSeek channel is the opposite case and does not use this: its
+ * levels come from the channel's own thinking setting, not from a catalog
+ * entry's `reasoningEfforts`, so there the adapter genuinely outranks the entry.
+ * @param input - the adapter's resolved level ids and the stored map, if any.
+ * @returns the description, or null when neither layer describes levels.
+ */
+export function describePiAiModelReasoning(input: {
+  readonly adapterLevels: readonly string[] | undefined
+  readonly declaredEfforts: unknown
+}): ModelReasoningDescription | null {
+  const declared = input.declaredEfforts === undefined || input.declaredEfforts === false || input.declaredEfforts === null
+    ? undefined
+    : Object.keys(input.declaredEfforts as Record<string, unknown>)
+  if (declared !== undefined && declared.length > 0) return { source: 'declared', levels: declared }
+  const adapter = input.adapterLevels
+  if (adapter !== undefined && adapter.length > 0) return { source: 'adapter', levels: adapter }
+  return null
+}
+
 /**
  * Decide one model's fate, in the order the guarantees depend on.
  *

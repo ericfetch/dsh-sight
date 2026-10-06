@@ -14,6 +14,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   decideReasoningFill,
+  describePiAiModelReasoning,
   REASONING_DICTIONARY,
   reasoningDictionaryEntries,
   reasoningFamilyOf,
@@ -168,4 +169,28 @@ test('an unmapped id is reported as unmatched, not guessed at', async () => {
   })
   assert.deepEqual(decision, { kind: 'unmatched' })
   assert.equal(asked, 0, 'the adapter is not consulted for an id no family claims')
+})
+
+test('a stored map is reported as declared even though the adapter echoes it back', () => {
+  // The adapter derives its levels FROM the declared map, so it always reports
+  // some. Reporting the adapter first would label every declared model
+  // "adapter" and leave the clear action unreachable.
+  assert.deepEqual(
+    describePiAiModelReasoning({ adapterLevels: ['off', 'high', 'xhigh', 'max'], declaredEfforts: { off: null, high: 'high', xhigh: 'xhigh', max: 'max' } }),
+    { source: 'declared', levels: ['off', 'high', 'xhigh', 'max'] },
+  )
+})
+
+test('without a stored map the adapter describes the model', () => {
+  assert.deepEqual(
+    describePiAiModelReasoning({ adapterLevels: ['low', 'high', 'max'], declaredEfforts: undefined }),
+    { source: 'adapter', levels: ['low', 'high', 'max'] },
+  )
+})
+
+test('a model neither layer describes reports nothing', () => {
+  assert.equal(describePiAiModelReasoning({ adapterLevels: undefined, declaredEfforts: undefined }), null)
+  assert.equal(describePiAiModelReasoning({ adapterLevels: [], declaredEfforts: undefined }), null)
+  // `reasoningEfforts: false` is an explicit "not a reasoning model", not a map.
+  assert.equal(describePiAiModelReasoning({ adapterLevels: undefined, declaredEfforts: false }), null)
 })

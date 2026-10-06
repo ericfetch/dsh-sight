@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url'
 import * as figwrightInstall from './figma-plugin-install.ts'
 import * as bridgePluginInstall from './figma-bridge-plugin.ts'
 import * as bridgeServerInstall from './figma-ui-server-patch.ts'
-import { decideReasoningFill, reasoningDictionaryEntries, reasoningFamilyOf } from './reasoning-dictionary.ts'
+import { decideReasoningFill, describePiAiModelReasoning, reasoningDictionaryEntries, reasoningFamilyOf } from './reasoning-dictionary.ts'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
   SIGHT_RPC,
@@ -321,25 +321,20 @@ export function apply(ctx: Context): void {
               } catch {
                 adapterReasoning = undefined
               }
-              const reasoning = ((): SightModelEntry['reasoning'] => {
-                // The adapter's own resolution wins: an installed catalog or the
-                // official channel already describes the levels it serves. Only
-                // when the adapter reports none do we fall back to a
-                // `reasoningEfforts` map declared in the pi-ai settings.
-                if (Array.isArray(adapterReasoning)) {
-                  const levels = adapterReasoning
+              const adapterLevels = Array.isArray(adapterReasoning)
+                ? adapterReasoning
                     .map(e => (typeof e?.id === 'string' && e.id.length > 0 ? e.id : undefined))
                     .filter((id): id is string => id !== undefined)
-                  if (levels.length > 0) return { source: 'adapter', levels }
-                }
-                const entry = (rawProviders?.[provider]?.models?.find(x => x !== null && typeof x === 'object' && x.id === m.id))
-                  ?? (rawProviders?.[provider]?.modelOverrides?.[m.id])
-                const efforts = entry?.reasoningEfforts
-                if (efforts !== undefined && efforts !== false && efforts !== null) {
-                  return { source: 'declared', levels: Object.keys(efforts) }
-                }
-                return null
-              })()
+                : undefined
+              const entry = (rawProviders?.[provider]?.models?.find(x => x !== null && typeof x === 'object' && x.id === m.id))
+                ?? (rawProviders?.[provider]?.modelOverrides?.[m.id])
+              // A stored map outranks the adapter here: on a pi-ai route the
+              // adapter's levels are derived FROM that map, so asking it first
+              // would report every declared model as "adapter".
+              const reasoning = describePiAiModelReasoning({
+                adapterLevels,
+                declaredEfforts: entry?.reasoningEfforts,
+              })
               return {
                 id: m.id,
                 name: m.name,
@@ -378,6 +373,10 @@ export function apply(ctx: Context): void {
               adapterReasoning = undefined
             }
             const reasoning = ((): SightModelEntry['reasoning'] => {
+              // The official channel's adapter resolves its levels from the
+              // channel's own thinking setting and always reports the same four,
+              // so the adapter outranks the catalog entry's `reasoningEfforts`
+              // here — the opposite of the pi-ai branch above.
               if (Array.isArray(adapterReasoning)) {
                 const levels = adapterReasoning.map(e => (typeof e?.id === 'string' && e.id.length > 0 ? e.id : undefined))
                   .filter((l): l is string => l !== undefined)
