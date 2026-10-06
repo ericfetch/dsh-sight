@@ -16,21 +16,29 @@ DeepSeek Harness（DSH）插件：**自动补推理等级** + **Figma MCP 桥接
 | Claude Sonnet 5、Opus 4.7/4.8 | off / low / medium / high / xhigh / max |
 | Claude Opus/Sonnet 4.6 | off / low / medium / high / max |
 | Claude 4.x 其余、Sonnet 3.7 | off / low / medium / high（按 token 预算） |
+| GPT-6 | off(none) / low / medium / high / xhigh / max |
 | GPT-5.2+ | off(none) / low / medium / high / xhigh |
 | GPT-5.1 | off(none) / low / medium / high |
 | GPT-5 / mini / nano | minimal / low / medium / high |
 | o3 / o4 | off / low / medium / high |
+| Gemini 3.x | low / medium / high |
 | Grok 4.x | off / low / medium / high / xhigh |
-| DeepSeek V4 | off / high / max |
-| GLM-5.x | off / high / xhigh / max |
+| DeepSeek V4.1 | off / low / high / max |
+| DeepSeek V4（pro/flash） | off / high / max |
+| GLM-5.3 | low / high / max（不可关闭思考） |
+| GLM-5.2 | off(none) / high / max |
+| GLM-5 / 5.1 / turbo | off / low / medium / high |
 | Kimi K3 | off / low / high / max |
 | Qwen 3 | off / low / medium / high |
-| MiniMax | off / high |
+| MiniMax | off / low / medium / high |
 
-- 只补**未声明**的模型，已有档位（含 `reasoningEfforts: false`）或目录自带推理能力的模型一律不动；
-- 预设按渠道协议生效：Claude 档位只写入 `api: anthropic-messages` 渠道，GPT-5 档位只写入 `openai-completions` / `openai-responses` 渠道，同名模型挂在别的协议中转上不会误写；
-- Claude 自适应思考机型（Opus/Fable/Sonnet 5、Opus 4.6+）同时写入 `compat.forceAdaptiveThinking: true`，档位以 `output_config.effort` 发送；Opus 4.7+/5 另写 `supportsTemperature: false`。已有的其他 compat 键保留。Claude/GPT 档位取自 pi-ai 内置目录的 `thinkingLevelMap`；
-- 档位值跟随各家族官方 API 文档（DeepSeek off/high/max、Grok 4.x low/medium/high/xhigh、GLM-5.2 high/xhigh/max、Kimi K3 low/high/max）；
+- **字典只是兜底**：写入前先问适配器，**适配器（内置目录 / 渠道自带元数据）已经描述推理能力的模型一律不动**——目录的 `thinkingLevelMap` 是按渠道转写的，比字典准，而 pi-ai 是整体替换而非合并这个映射，写下去只会把模型变窄（例如目录里的 `minimal` 会消失）或多出厂商不认的档位。字典只用于适配器描述不了的模型（自建中转的私有模型 id）；
+- 已有档位声明（含 `reasoningEfforts: false`）一律不动；
+- 预设按渠道协议生效：Claude 档位只写入 `api: anthropic-messages` 渠道，GPT/o 系只写入 `openai-completions` / `openai-responses` 渠道，同名模型挂在别的协议中转上不会误写；
+- Claude 自适应思考机型（Opus/Fable/Sonnet 5、Opus 4.6+）同时写入 `compat.forceAdaptiveThinking: true`，档位以 `output_config.effort` 发送；Opus 4.7+/5 另写 `supportsTemperature: false`。已有的其他 compat 键保留；
+- 结果区会列出**写入**、**跳过**（含原因：适配器已描述 / 已有声明）与**失败**（某个渠道被配置校验拒绝，其余渠道仍然写入）三类明细——所以"写入 0 个"会说明为什么；
+- 每行「推理(声明)」右侧有「**清除声明**」（需点两次确认）：删掉该模型写入的 `reasoningEfforts` 及本插件写入的 `compat` 键，让适配器/内置目录的档位重新生效。这是插件唯一能做的"修复"——它读不到内置目录，无法算出正确档位，但**取消声明**之后 pi-ai 会回退到目录自己的 `thinkingLevelMap`，比重写更安全；手写的其他 compat 键保留；
+- 档位值取自各家族厂商渠道的 `thinkingLevelMap`（zai 的 GLM、deepseek 的 V4、moonshotai 的 Kimi、openai 的 GPT、google 的 Gemini）；
 - 写入 `llm-pi-ai` 配置的 `reasoningEfforts`，下次请求即生效。
 
 ### 🔗 Figma MCP（渐进式）
@@ -119,9 +127,9 @@ dsh plugin --profile desktop update --latest @eric.wen/dsh-sight
 
 ### 模型推理等级
 
-1. **补推理等级**：打开 设置 → 模型推理等级，点「自动补推理等级」，为未声明档位的模型按模型家族写入其官方支持的推理档位；
-2. **确认**：结果区列出每个被写入的 `provider/model → 家族 [档位]`，模型选择器随即出现这些档位；
-3. **复核**：渠道列表里每行显示该模型当前的推理来源（`推理: …` = 来自适配器/目录，`推理(声明): …` = 来自你写入的 `reasoningEfforts`）。
+1. **补推理等级**：打开 设置 → 模型推理等级，点「自动补推理等级」，为未声明档位、且适配器描述不了的模型按模型家族写入其支持的推理档位；
+2. **确认**：结果区列出被写入的 `provider/model → 家族 [档位]`，以及被跳过的模型（适配器已描述 / 已有声明）和写入失败的渠道；模型选择器随即出现这些档位；
+3. **复核**：渠道列表里每行显示该模型当前的推理来源（`推理: …` = 来自适配器/目录，`推理(声明): …` = 来自你写入的 `reasoningEfforts`）与图片能力（`🖼 可读图片` / `仅文本`）。想改一个**已存在**的档位声明（包括写错的），点该行的「清除声明」让目录档位重新生效，或到 设置 → 模型 里手工改——本插件不会覆盖已有声明。
 
 ### Figma MCP
 

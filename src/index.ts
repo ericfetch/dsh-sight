@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url'
 import * as figwrightInstall from './figma-plugin-install.ts'
 import * as bridgePluginInstall from './figma-bridge-plugin.ts'
 import * as bridgeServerInstall from './figma-ui-server-patch.ts'
+import { decideReasoningFill, reasoningDictionaryEntries, reasoningFamilyOf } from './reasoning-dictionary.ts'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
   SIGHT_RPC,
@@ -46,7 +47,10 @@ import {
   type SightProviderEntry,
   type SightReadBackend,
   type SightReasoningChange,
-  type SightReasoningDictionaryEntry,
+  type SightReasoningFailure,
+  type SightReasoningClearRequest,
+  type SightReasoningClearResult,
+  type SightReasoningSkip,
   type SightStatusResult,
 } from './config.ts'
 
@@ -98,83 +102,6 @@ const FIGMA_READ_BIN = join(dirname(fileURLToPath(import.meta.url)), 'figma-read
  */
 const FIGMA_WRITE_BIN = join(dirname(fileURLToPath(import.meta.url)), 'figma-ui-server.js')
 
-/**
- * Reasoning-effort dictionary. Keys are the pi-ai canonical thinking levels a
- * hand-declared model may offer; values are the wire spellings sent on the
- * request. The effort vocabulary follows each family's official API docs
- * (DeepSeek: off/high/max; Grok 4.x: low/medium/high/xhigh; GLM-5.2:
- * max/xhigh/high/medium/low/minimal/none; Kimi K3: low/high/max; GPT-5:
- * low/medium/high). Matching a model id to a family here makes `applyReasoning`
- * fill in a missing `reasoningEfforts` block for a freshly-added third-party
- * channel, so the model picker gains its supported reasoning levels without
- * hand-editing settings.
- *
- * `off: null` is the one level that may leave its wire value empty - pi-ai
- * reads it as "supported, send nothing" (thinking left to the provider). An
- * omitted level is unsupported, so a family whose thinking cannot be turned
- * off (Claude Opus 5 / Fable 5) simply omits `off`.
- *
- * `api` restricts an entry to the wire protocols whose spellings it uses, so a
- * Claude preset never lands on an OpenAI-compatible relay of the same model id
- * (and vice versa). `compat` is merged into the model's `compat` block: Claude
- * adaptive-thinking models need `forceAdaptiveThinking` for the level to reach
- * the wire as `output_config.effort` instead of a token budget. Claude levels
- * are transcribed from the installed pi-ai catalog's `thinkingLevelMap`.
- */
-const ANTHROPIC_API = ['anthropic-messages'] as const
-const OPENAI_STYLE_API = ['openai-completions', 'openai-responses'] as const
-const ADAPTIVE = { forceAdaptiveThinking: true } as const
-const ADAPTIVE_NO_TEMPERATURE = { forceAdaptiveThinking: true, supportsTemperature: false } as const
-const ADAPTIVE_LEVELS = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' } as const
-
-interface ReasoningPreset {
-  readonly re: RegExp
-  readonly family: string
-  readonly efforts: Readonly<Record<string, string | null>>
-  /** Wire protocols this preset's spellings belong to; absent = any. */
-  readonly api?: readonly string[]
-  /** Compat flags merged into the model's `compat` block alongside the efforts. */
-  readonly compat?: Readonly<Record<string, boolean>>
-}
-
-const REASONING_DICTIONARY: readonly ReasoningPreset[] = [
-  // Anthropic: adaptive thinking (the level is sent as `effort`).
-  { re: /^claude-opus-5/, family: 'Claude Opus 5', api: ANTHROPIC_API, efforts: ADAPTIVE_LEVELS, compat: ADAPTIVE_NO_TEMPERATURE },
-  { re: /^claude-fable-5/, family: 'Claude Fable 5', api: ANTHROPIC_API, efforts: ADAPTIVE_LEVELS, compat: ADAPTIVE },
-  { re: /^claude-sonnet-5/, family: 'Claude Sonnet 5', api: ANTHROPIC_API, efforts: { off: null, ...ADAPTIVE_LEVELS }, compat: ADAPTIVE },
-  { re: /^claude-opus-4-[78]/, family: 'Claude Opus 4.7/4.8', api: ANTHROPIC_API, efforts: { off: null, ...ADAPTIVE_LEVELS }, compat: ADAPTIVE_NO_TEMPERATURE },
-  { re: /^claude-(opus|sonnet)-4-6/, family: 'Claude 4.6', api: ANTHROPIC_API, efforts: { off: null, low: 'low', medium: 'medium', high: 'high', max: 'max' }, compat: ADAPTIVE },
-  // Anthropic: budget-based thinking (the level picks a token budget).
-  { re: /^claude-(opus|sonnet|haiku)-4|^claude-3-7-sonnet/, family: 'Claude 4.x / 3.7', api: ANTHROPIC_API, efforts: { off: null, low: 'low', medium: 'medium', high: 'high' } },
-  // OpenAI GPT-5 line: levels differ per minor version (pi-ai catalog).
-  { re: /^gpt-5\.[2-6]/, family: 'OpenAI GPT-5.2+', api: OPENAI_STYLE_API, efforts: { off: 'none', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh' } },
-  { re: /^gpt-5\.1/, family: 'OpenAI GPT-5.1', api: OPENAI_STYLE_API, efforts: { off: 'none', low: 'low', medium: 'medium', high: 'high' } },
-  { re: /^gpt-5/, family: 'OpenAI GPT-5', api: OPENAI_STYLE_API, efforts: { minimal: 'minimal', low: 'low', medium: 'medium', high: 'high' } },
-  { re: /^o3/, family: 'OpenAI o-series', efforts: { off: null, low: 'low', medium: 'medium', high: 'high' } },
-  { re: /^o4/, family: 'OpenAI o-series', efforts: { off: null, low: 'low', medium: 'medium', high: 'high' } },
-  { re: /^grok-4/, family: 'xAI Grok 4.x', efforts: { off: null, low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh' } },
-  { re: /^deepseek-v4/, family: 'DeepSeek V4', efforts: { off: null, high: 'high', max: 'max' } },
-  { re: /^glm-5/, family: 'Zhipu GLM-5', efforts: { off: null, high: 'high', xhigh: 'xhigh', max: 'max' } },
-  { re: /^kimi-k3/, family: 'Kimi K3', efforts: { off: null, low: 'low', high: 'high', max: 'max' } },
-  { re: /^qwen3/, family: 'Qwen 3', efforts: { off: null, low: 'low', medium: 'medium', high: 'high' } },
-  { re: /^minimax/, family: 'MiniMax', efforts: { off: null, high: 'high' } },
-]
-
-/**
- * First reasoning-dictionary family matching a model id on a route speaking
- * `api`. An unknown api (catalog route without an explicit `api`) does not
- * exclude a preset; a known mismatching api does.
- */
-function reasoningFamilyOf(modelId: string, api?: string): ReasoningPreset | undefined {
-  const id = modelId.toLowerCase()
-  for (const entry of REASONING_DICTIONARY) {
-    if (!entry.re.test(id)) continue
-    if (api !== undefined && entry.api !== undefined && !entry.api.includes(api)) continue
-    return entry
-  }
-  return undefined
-}
-
 /** Loose raw pi-ai profile shape read from the stored settings layer. */
 interface RawProfile {
   readonly displayName?: string
@@ -187,6 +114,8 @@ interface RawModel {
   readonly name?: string
   readonly reasoningEfforts?: Readonly<Record<string, string | null>> | false
   readonly compat?: Readonly<Record<string, unknown>>
+  /** Official-channel catalog field; the pi-ai profile spells the same fact `input`. */
+  readonly inputModalities?: readonly string[]
 }
 interface RawSection {
   readonly providers?: Readonly<Record<string, RawProfile | undefined>>
@@ -200,10 +129,15 @@ interface RawSection {
  * `internal:` RPC error on the settings page.
  */
 interface LlmServiceLike {
-  listModels(provider: string): Promise<readonly { id: string; name: string }[]>
+  listModels(provider: string): Promise<readonly { id: string; name: string; inputModalities?: readonly string[] }[]>
   resolveModelInfo(provider: string, model: string): Promise<{
     reasoning?: { efforts?: readonly { id?: string; name?: string }[] }
   }>
+}
+
+/** Whether a resolved modality list admits images; `null` when it states none. */
+function imageAdmitted(modalities: readonly string[] | undefined): boolean | null {
+  return Array.isArray(modalities) ? modalities.includes('image') : null
 }
 
 /** RPC success arm. */
@@ -369,11 +303,7 @@ export function apply(ctx: Context): void {
     /** Full overview for the settings page. */
     const status = async (): Promise<SightStatusResult> => {
       const rawProviders = rawSection()?.providers
-      const reasoningDictionary: readonly SightReasoningDictionaryEntry[] = REASONING_DICTIONARY.map(entry => ({
-        family: entry.family,
-        label: entry.re.source,
-        efforts: Object.entries(entry.efforts).map(([level, wire]) => ({ level, wire: wire ?? '' })),
-      }))
+      const reasoningDictionary = reasoningDictionaryEntries()
       const providers: SightProviderEntry[] = []
       // The configured provider set is the *effective* config (base + user).
       const configured = providersOf(descriptorOf(NS)?.value)
@@ -414,6 +344,9 @@ export function apply(ctx: Context): void {
                 id: m.id,
                 name: m.name,
                 reasoning,
+                // The adapter's resolved modalities are exactly what prompt
+                // admission checks, so this answers "can I paste an image here".
+                image: imageAdmitted(m.inputModalities),
               }
             })))
           } catch (caught) {
@@ -436,7 +369,7 @@ export function apply(ctx: Context): void {
         if (deepseekModels.length > 0) {
           const models: SightModelEntry[] = await Promise.all(deepseekModels.map(async (dm): Promise<SightModelEntry> => {
             const id = typeof dm?.id === 'string' ? dm.id : ''
-            if (id.length === 0) return { id: '', name: '', reasoning: null }
+            if (id.length === 0) return { id: '', name: '', reasoning: null, image: null }
             let adapterReasoning: readonly { id?: string; name?: string }[] | undefined
             try {
               const info = await llm.resolveModelInfo(DEEPSEEK_PROVIDER, id)
@@ -459,6 +392,8 @@ export function apply(ctx: Context): void {
               id,
               name: typeof dm?.name === 'string' && dm.name.length > 0 ? dm.name : id,
               reasoning,
+              // The official channel's catalog carries the modality directly.
+              image: imageAdmitted(dm?.inputModalities),
             }
           }))
           providers.push({ provider: DEEPSEEK_PROVIDER, name: 'DeepSeek 官方', models, error: null })
@@ -470,18 +405,53 @@ export function apply(ctx: Context): void {
     }
 
     /**
-     * Bulk-write a reasoning-effort map for every configured model matching the
-     * reasoning dictionary and not yet declaring one. Hand-declared models in a
-     * `models` list always gain the dictionary map (they have no other source
-     * of reasoning); catalog-backed `modelOverrides` models are filled only when
-     * the adapter does not already describe reasoning for them, so an installed
-     * catalog's own levels are never overridden. Existing declared maps are
-     * left untouched.
+     * Whether the adapter already resolves reasoning levels for one model.
+     *
+     * This is the guard that keeps the dictionary a *fallback*: a route the
+     * installed pi-ai catalog describes carries a `thinkingLevelMap` transcribed
+     * from the vendor, and pi-ai replaces — never merges — that map when a
+     * `reasoningEfforts` block appears beside it. Writing the dictionary there
+     * would therefore narrow the model (the vendor's `minimal` disappears) or
+     * invent levels the vendor denies. Resolution failing means the catalog does
+     * not describe the model, which is exactly when the dictionary is needed.
+     * @param provider - provider route key.
+     * @param model - model id on that route.
+     * @returns true when the adapter already describes this model's levels.
+     */
+    const adapterDescribesReasoning = async (provider: string, model: string): Promise<boolean> => {
+      try {
+        const info = await llm.resolveModelInfo(provider, model)
+        return info.reasoning !== undefined
+      } catch {
+        return false
+      }
+    }
+
+    /** One dictionary preset flattened for the result payload. */
+    const presetEfforts = (match: { readonly efforts: Readonly<Record<string, string | null>> }): readonly { level: string; wire: string }[] =>
+      Object.entries(match.efforts).map(([level, wire]) => ({ level, wire: wire ?? '' }))
+
+    /**
+     * Bulk-write a reasoning-effort map for every configured model the adapter
+     * cannot describe, matching the reasoning dictionary, and not yet declaring
+     * a map. The dictionary is a fallback in both shapes:
+     *
+     * - a hand-declared `models` entry whose id the installed catalog describes
+     *   keeps the catalog's own levels (see {@link adapterDescribesReasoning});
+     * - a catalog-backed `modelOverrides` entry is filled only when the adapter
+     *   reports no reasoning for it.
+     *
+     * Existing declared maps are left untouched — including a wrong one, which
+     * is why the result reports every skipped model and the UI shows them.
+     * Channels are written one at a time, so a channel the settings validator
+     * refuses is reported in `failed` instead of discarding the whole pass.
      */
     const applyReasoning = async (): Promise<SightApplyReasoningResult> => {
       const rawProviders = rawSection()?.providers
+      const skipped: SightReasoningSkip[] = []
+      const failed: SightReasoningFailure[] = []
       if (rawProviders === undefined || typeof rawProviders !== 'object') {
-        return { applied: 0, providers: 0, changes: [] }
+        return { applied: 0, providers: 0, changes: [], skipped, failed }
       }
       let applied = 0
       let touchedProviders = 0
@@ -494,44 +464,69 @@ export function apply(ctx: Context): void {
         const api = routeApi(provider, profile, effective)
         const rawModels = Array.isArray(profile.models) ? profile.models : undefined
         if (rawModels !== undefined) {
+          // Sequential rather than `map`: the adapter guard is asynchronous, and
+          // a hand-declared list is short enough that the round-trips do not
+          // matter next to the settings write that follows.
+          const next: unknown[] = []
           let changedCount = 0
-          const next = rawModels.map((m): unknown => {
-            if (m === null || typeof m !== 'object' || typeof m.id !== 'string') return m
-            // `false` (explicitly non-reasoning) and any declared map are left alone.
-            if (m.reasoningEfforts !== undefined) return m
-            const match = reasoningFamilyOf(m.id, api)
-            if (match === undefined) return m
-            changedCount += 1
-            changes.push({
-              provider,
-              model: m.id,
-              family: match.family,
-              efforts: Object.entries(match.efforts).map(([level, wire]) => ({ level, wire: wire ?? '' })),
+          for (const m of rawModels) {
+            if (m === null || typeof m !== 'object' || typeof m.id !== 'string') {
+              next.push(m)
+              continue
+            }
+            const decision = await decideReasoningFill({
+              modelId: m.id,
+              api,
+              declaredEfforts: m.reasoningEfforts,
+              adapterDescribes: () => adapterDescribesReasoning(provider, m.id),
             })
-            return match.compat === undefined
+            if (decision.kind === 'unmatched') {
+              next.push(m)
+              continue
+            }
+            if (decision.kind === 'skip') {
+              skipped.push({ provider, model: m.id, reason: decision.reason })
+              next.push(m)
+              continue
+            }
+            const match = decision.preset
+            changedCount += 1
+            changes.push({ provider, model: m.id, family: match.family, efforts: presetEfforts(match) })
+            next.push(match.compat === undefined
               ? { ...m, reasoningEfforts: { ...match.efforts } }
-              : { ...m, reasoningEfforts: { ...match.efforts }, compat: { ...m.compat, ...match.compat } }
-          })
+              : { ...m, reasoningEfforts: { ...match.efforts }, compat: { ...m.compat, ...match.compat } })
+          }
           if (changedCount > 0) {
-            await settings.mutate(NS, [{ op: 'set', path: ['providers', provider, 'models'], value: next }])
-            applied += changedCount
-            touchedProviders += 1
+            try {
+              await settings.mutate(NS, [{ op: 'set', path: ['providers', provider, 'models'], value: next }])
+              applied += changedCount
+              touchedProviders += 1
+            } catch (error) {
+              failed.push({ provider, error: error instanceof Error ? error.message : String(error) })
+              // The change list describes what was *attempted*; drop this
+              // channel's rows so it never reads as applied.
+              changes.splice(changes.length - changedCount, changedCount)
+            }
           }
           continue
         }
         const ops: SettingsPathOp[] = []
+        let planned = 0
         try {
           const models = await llm.listModels(provider)
           for (const m of models) {
-            if (profile.modelOverrides?.[m.id]?.reasoningEfforts !== undefined) continue
-            const match = reasoningFamilyOf(m.id, api)
-            if (match === undefined) continue
-            try {
-              const info = await llm.resolveModelInfo(provider, m.id)
-              if (info.reasoning !== undefined) continue // adapter already describes reasoning
-            } catch {
-              // resolution failed: still fill from the dictionary
+            const decision = await decideReasoningFill({
+              modelId: m.id,
+              api,
+              declaredEfforts: profile.modelOverrides?.[m.id]?.reasoningEfforts,
+              adapterDescribes: () => adapterDescribesReasoning(provider, m.id),
+            })
+            if (decision.kind === 'unmatched') continue
+            if (decision.kind === 'skip') {
+              skipped.push({ provider, model: m.id, reason: decision.reason })
+              continue
             }
+            const match = decision.preset
             ops.push({
               op: 'set',
               path: ['providers', provider, 'modelOverrides', m.id, 'reasoningEfforts'],
@@ -540,23 +535,71 @@ export function apply(ctx: Context): void {
             for (const [key, value] of Object.entries(match.compat ?? {})) {
               ops.push({ op: 'set', path: ['providers', provider, 'modelOverrides', m.id, 'compat', key], value })
             }
-            applied += 1
-            changes.push({
-              provider,
-              model: m.id,
-              family: match.family,
-              efforts: Object.entries(match.efforts).map(([level, wire]) => ({ level, wire: wire ?? '' })),
-            })
+            planned += 1
+            changes.push({ provider, model: m.id, family: match.family, efforts: presetEfforts(match) })
           }
           if (ops.length > 0) {
             await settings.mutate(NS, ops)
+            applied += planned
             touchedProviders += 1
           }
-        } catch {
-          // A model not in the catalog is refused by the namespace validator.
+        } catch (error) {
+          failed.push({ provider, error: error instanceof Error ? error.message : String(error) })
+          changes.splice(changes.length - planned, planned)
         }
       }
-      return { applied, providers: touchedProviders, changes }
+      return { applied, providers: touchedProviders, changes, skipped, failed }
+    }
+
+    /**
+     * Drop one model's written declaration so the adapter describes it again.
+     *
+     * This is the only repair available to the plugin: it cannot read the
+     * installed catalog, so it can never compute the "right" map for a catalog
+     * model — but once the stored `reasoningEfforts` (and the compat keys the
+     * matching preset would have written) are gone, pi-ai falls back to the
+     * catalog's own `thinkingLevelMap`, which is the vendor's. Undeclaring is
+     * therefore strictly safer than overwriting.
+     * @param req - the provider and model to undeclare.
+     * @returns whether the write landed, and why not when it did not.
+     */
+    const clearReasoning = async (req: SightReasoningClearRequest): Promise<SightReasoningClearResult> => {
+      const provider = typeof req.provider === 'string' ? req.provider : ''
+      const model = typeof req.model === 'string' ? req.model : ''
+      if (provider.length === 0 || model.length === 0) return { ok: false, error: 'provider 与 model 必填' }
+      const profile = rawSection()?.providers?.[provider]
+      if (profile === undefined || typeof profile !== 'object') {
+        return { ok: false, error: `未找到渠道 ${provider}` }
+      }
+      // Remove exactly what `applyReasoning` would have written for this model:
+      // its `reasoningEfforts`, plus the preset's compat keys. A compat key the
+      // user set by hand and no preset declares is left alone, and a key that is
+      // not there is never named — an `unset` on an absent path would leave an
+      // empty `compat: {}` behind.
+      const preset = reasoningFamilyOf(model, routeApi(provider, profile, effectiveProviders()))
+      const models = Array.isArray(profile.models) ? profile.models : undefined
+      const index = models?.findIndex(entry => entry !== null && typeof entry === 'object' && entry.id === model) ?? -1
+      const target = models !== undefined && index >= 0
+        ? { entry: models[index] as { reasoningEfforts?: unknown; compat?: Readonly<Record<string, unknown>> }, base: ['providers', provider, 'models', String(index)] as string[] }
+        : { entry: profile.modelOverrides?.[model], base: ['providers', provider, 'modelOverrides', model] as string[] }
+      if (target.entry === undefined || typeof target.entry !== 'object') {
+        return { ok: false, error: `${provider}/${model} 没有可清除的声明` }
+      }
+      const ops: SettingsPathOp[] = []
+      if (target.entry.reasoningEfforts !== undefined) {
+        ops.push({ op: 'unset', path: [...target.base, 'reasoningEfforts'] })
+      }
+      for (const key of Object.keys(preset?.compat ?? {})) {
+        if (target.entry.compat?.[key] === undefined) continue
+        ops.push({ op: 'unset', path: [...target.base, 'compat', key] })
+      }
+      if (ops.length === 0) return { ok: false, error: `${provider}/${model} 没有可清除的声明` }
+      try {
+        await settings.mutate(NS, ops)
+        return { ok: true, error: null }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
     }
 
     // ── Figma MCP bridge ────────────────────────────────────────────────────
@@ -958,6 +1001,13 @@ export function apply(ctx: Context): void {
             return ok(await status())
           case SIGHT_RPC.applyReasoning:
             return ok(await applyReasoning())
+          case SIGHT_RPC.clearReasoning: {
+            const p = payload as Partial<SightReasoningClearRequest>
+            return ok(await clearReasoning({
+              provider: typeof p.provider === 'string' ? p.provider : '',
+              model: typeof p.model === 'string' ? p.model : '',
+            }))
+          }
           case SIGHT_RPC.figmaMcpStatus:
             return ok(figmaMcpStatus())
           case SIGHT_RPC.figmaMcpApply: {

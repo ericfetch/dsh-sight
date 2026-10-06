@@ -11,6 +11,7 @@ export const SIGHT_RPC_CHANNEL = '/sight'
 export const SIGHT_RPC = {
   status: 'status',
   applyReasoning: 'applyReasoning',
+  clearReasoning: 'clearReasoning',
   figmaMcpStatus: 'figmaMcpStatus',
   figmaMcpApply: 'figmaMcpApply',
   figmaMcpRemove: 'figmaMcpRemove',
@@ -38,6 +39,13 @@ export interface SightModelEntry {
    * exposes no reasoning levels at all.
    */
   readonly reasoning: { readonly source: 'adapter' | 'declared'; readonly levels: readonly string[] } | null
+  /**
+   * Whether this model accepts image input, as the adapter resolves it. This is
+   * the same `inputModalities` the prompt admission checks, so `false` means
+   * pasting an image into this model is refused before the request is sent.
+   * `null` when the adapter states no modalities at all.
+   */
+  readonly image: boolean | null
 }
 
 /** One configured pi-ai provider group on the settings page. */
@@ -63,11 +71,55 @@ export interface SightReasoningChange {
   readonly efforts: readonly { readonly level: string; readonly wire: string }[]
 }
 
+/**
+ * One model the pass deliberately left alone. Reported so a run that writes
+ * nothing explains itself instead of looking like a silent success.
+ */
+export interface SightReasoningSkip {
+  readonly provider: string
+  readonly model: string
+  /**
+   * `adapter` = the adapter already describes levels for it (an installed
+   * catalog entry or the channel's own metadata), so the dictionary would only
+   * narrow it; `declared` = the settings already carry a `reasoningEfforts` map.
+   */
+  readonly reason: 'adapter' | 'declared'
+}
+
+/** One channel whose write was refused; the other channels still applied. */
+export interface SightReasoningFailure {
+  readonly provider: string
+  readonly error: string
+}
+
 /** Result of {@link SIGHT_RPC.applyReasoning}. */
 export interface SightApplyReasoningResult {
+  /** Models whose `reasoningEfforts` this pass wrote. */
   readonly applied: number
+  /** Channels this pass wrote to. */
   readonly providers: number
   readonly changes: readonly SightReasoningChange[]
+  /** Models left untouched, with why. */
+  readonly skipped: readonly SightReasoningSkip[]
+  /** Channels whose write the settings validator refused, with the diagnostic. */
+  readonly failed: readonly SightReasoningFailure[]
+}
+
+/**
+ * Request payload for {@link SIGHT_RPC.clearReasoning}: drop one model's
+ * written declaration so the adapter's own resolution — an installed catalog's
+ * `thinkingLevelMap` — describes it again.
+ */
+export interface SightReasoningClearRequest {
+  readonly provider: string
+  readonly model: string
+}
+
+/** Result of {@link SIGHT_RPC.clearReasoning}. */
+export interface SightReasoningClearResult {
+  readonly ok: boolean
+  /** Diagnostic when the write was refused, or the model had no declaration. */
+  readonly error: string | null
 }
 
 /**

@@ -58,6 +58,7 @@
   },
   "scripts": {
     "build": "tsdown",
+    "test": "node --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --pretty false"
   },
   "dependencies": {

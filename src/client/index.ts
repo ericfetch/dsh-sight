@@ -25,7 +25,11 @@ import {
   type SightFigwrightPluginUpdateResult,
   type SightModelEntry,
   type SightReasoningChange,
+  type SightReasoningClearRequest,
+  type SightReasoningClearResult,
   type SightReasoningDictionaryEntry,
+  type SightReasoningFailure,
+  type SightReasoningSkip,
   type SightReadBackend,
   type SightStatusResult,
 } from '../config.ts'
@@ -159,13 +163,46 @@ function RepoDirPicker(props: { value: string; onPick: (path: string) => void; o
   )
 }
 
-function ModelRow(props: { model: SightModelEntry }): ReactElement {
-  const { model } = props
+function ModelRow(props: {
+  model: SightModelEntry
+  provider: string
+  busy: boolean
+  onClear: (provider: string, model: string) => void
+}): ReactElement {
+  const { model, provider, busy, onClear } = props
+  // Clearing is a two-step action: it removes a declaration the user may have
+  // written by hand, so it must not be one stray click away.
+  const [confirming, setConfirming] = React.useState(false)
   const reasoningChip = model.reasoning === null
     ? React.createElement(Chip, { tone: 'warn' }, '无推理等级')
     : model.reasoning.source === 'declared'
       ? React.createElement(Chip, { tone: 'info' }, `推理(声明): ${model.reasoning.levels.join('/')}`)
       : React.createElement(Chip, { tone: 'on' }, `推理: ${model.reasoning.levels.join('/')}`)
+  // Mirrors what prompt admission checks: `false` means an image pasted into
+  // this model is refused before the request leaves DSH.
+  const imageChip = model.image === true
+    ? React.createElement(Chip, { tone: 'on' }, '🖼 可读图片')
+    : model.image === false
+      ? React.createElement(Chip, { tone: 'off' }, '仅文本')
+      : null
+  // Only a written declaration can be cleared; an adapter-resolved model has
+  // nothing stored, and clearing it would change nothing.
+  const clearButton = model.reasoning?.source === 'declared'
+    ? React.createElement('button', {
+        type: 'button',
+        style: { ...BUTTON, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap', minHeight: 24 },
+        disabled: busy,
+        title: '删除该模型写入的 reasoningEfforts（及本插件写入的 compat），'
+          + '让适配器/内置目录的档位重新生效。手写的其他 compat 键保留。',
+        onClick: () => {
+          if (confirming) {
+            setConfirming(false)
+            onClear(provider, model.id)
+          } else setConfirming(true)
+        },
+        onBlur: () => setConfirming(false),
+      }, confirming ? '确认清除' : '清除声明')
+    : null
   return React.createElement(
     'div',
     { style: ROW },
@@ -173,7 +210,9 @@ function ModelRow(props: { model: SightModelEntry }): ReactElement {
       React.createElement('div', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: model.id }, model.id),
       React.createElement('div', { style: { fontSize: 11, opacity: 0.6 } }, model.name),
     ),
+    imageChip,
     reasoningChip,
+    clearButton,
   )
 }
 
@@ -200,11 +239,29 @@ function SightPage(): ReactElement {
       .finally(() => setBusy(''))
   }
 
+  /** Drop one model's written declaration so the adapter describes it again. */
+  const clearDeclaration = (provider: string, model: string): void => {
+    if (busy !== '') return
+    setBusy(`${provider}/${model}`)
+    setError(null)
+    const payload: SightReasoningClearRequest = { provider, model }
+    rpc<SightReasoningClearResult>(clientCtx.get('connection') as unknown as ConnectionHandle, SIGHT_RPC.clearReasoning, payload)
+      .then(value => {
+        if (!value.ok) setError(`清除 ${provider}/${model} 的声明失败：${value.error ?? 'unknown'}`)
+        load()
+      })
+      .catch((e: unknown) => setError(formatErrorMessage(e)))
+      .finally(() => setBusy(''))
+  }
+
   const children: ReactNode[] = []
   children.push(React.createElement('h2', { style: { margin: 0, fontSize: 16, fontWeight: 600 } }, '模型推理等级 (Sight)'))
   children.push(React.createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.75, lineHeight: 1.6 } },
     '新增第三方渠道后，「自动补推理等级」会按模型家族写入其支持的推理档位（reasoningEfforts），' +
     '模型选择器随即出现这些档位。声明写入 llm-pi-ai 配置，下次请求即生效。'))
+  children.push(React.createElement('p', { style: { margin: 0, fontSize: 12, opacity: 0.65, lineHeight: 1.6 } },
+    '行尾的「🖼 可读图片 / 仅文本」是适配器解析出的图片输入能力：显示「仅文本」的模型无法粘贴图片。' +
+    '要打开它，到 设置 → 模型 → 该渠道 → 展开模型行 → 勾选「输入类型」里的「图片」（自建渠道的模型 id 不在内置目录里，默认是纯文本）。'))
   children.push(React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
     React.createElement('button', { type: 'button', style: BUTTON, disabled: busy !== '', onClick: applyReasoning },
       busy === 'reasoning' ? '补档中…' : '自动补推理等级'),
@@ -216,9 +273,12 @@ function SightPage(): ReactElement {
   }
 
   if (reasoningResult !== null) {
+    const failed = Array.isArray(reasoningResult.failed) ? reasoningResult.failed : []
+    const skipped = Array.isArray(reasoningResult.skipped) ? reasoningResult.skipped : []
     const lines: ReactNode[] = []
     lines.push(React.createElement('div', { style: { fontSize: 12, fontWeight: 600 } },
-      `自动补推理等级完成：${reasoningResult.applied} 个模型，${reasoningResult.providers} 个渠道。`))
+      `自动补推理等级完成：写入 ${reasoningResult.applied} 个模型 / ${reasoningResult.providers} 个渠道，`
+      + `跳过 ${skipped.length} 个${failed.length > 0 ? `，失败 ${failed.length} 个渠道` : ''}。`))
     if (Array.isArray(reasoningResult.changes) && reasoningResult.changes.length > 0) {
       lines.push(React.createElement('div', { style: { fontSize: 12, opacity: 0.75, marginTop: 4 } },
         ...reasoningResult.changes.flatMap((change: SightReasoningChange, index: number) => [
@@ -227,7 +287,36 @@ function SightPage(): ReactElement {
         ]),
       ))
     }
-    children.push(React.createElement('div', { style: { border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#4ade80', background: 'rgba(34,197,94,0.08)' } }, ...lines))
+    if (failed.length > 0) {
+      lines.push(React.createElement('div', { style: { marginTop: 6, fontSize: 12, color: '#f87171', whiteSpace: 'pre-wrap' } },
+        ...failed.flatMap((f: SightReasoningFailure, index: number) => [
+          React.createElement('div', { key: `f${index}` }, `✗ ${f.provider}: ${f.error}`),
+        ]),
+      ))
+    }
+    if (skipped.length > 0) {
+      // The skip list is the only place a run explains itself: a model the
+      // adapter already describes is deliberately left with the vendor's own
+      // levels, and one with a stored map is never overwritten — including a
+      // wrong map, which has to be edited by hand.
+      const shown = skipped.slice(0, 30)
+      lines.push(React.createElement('div', { style: { marginTop: 6, fontSize: 12, opacity: 0.7 } },
+        React.createElement('div', { style: { fontWeight: 600 } }, '跳过（未改动）：'),
+        ...shown.flatMap((s: SightReasoningSkip, index: number) => [
+          React.createElement('div', { key: `s${index}` },
+            `· ${s.provider}/${s.model} — ${s.reason === 'adapter' ? '适配器/内置目录已描述档位' : '已存在 reasoningEfforts 声明'}`),
+        ]),
+        skipped.length > shown.length
+          ? React.createElement('div', { key: 'more' }, `… 其余 ${skipped.length - shown.length} 个从略`)
+          : null,
+      ))
+    }
+    const tone = failed.length > 0
+      ? { border: '1px solid rgba(239,68,68,0.4)', color: '#f87171', background: 'rgba(239,68,68,0.08)' }
+      : reasoningResult.applied === 0
+        ? { border: '1px solid rgba(250,204,21,0.4)', color: '#eab308', background: 'rgba(250,204,21,0.08)' }
+        : { border: '1px solid rgba(34,197,94,0.35)', color: '#4ade80', background: 'rgba(34,197,94,0.08)' }
+    children.push(React.createElement('div', { style: { ...tone, borderRadius: 6, padding: '8px 12px', fontSize: 12 } }, ...lines))
   }
 
   if (data === null) {
@@ -237,7 +326,11 @@ function SightPage(): ReactElement {
     if (Array.isArray(providers) && providers.length > 0) {
       for (const group of providers) {
         const rows = group.models.map((model: SightModelEntry) => React.createElement(ModelRow, {
-          key: model.id, model,
+          key: model.id,
+          model,
+          provider: group.provider,
+          busy: busy !== '',
+          onClear: clearDeclaration,
         }))
         const head = React.createElement('div', { style: GROUP_HEAD },
           React.createElement('span', null, group.name),
